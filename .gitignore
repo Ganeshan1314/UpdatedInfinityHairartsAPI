@@ -1,0 +1,8 @@
+# IDE and build output
+.vs/
+**/bin/
+**/obj/
+
+# Local application secrets and credentials
+InfinityHairartsAPI/appsettings.json
+InfinityHairartsAPI/infinity-hair-arts-firebase-adminsdk-*.json

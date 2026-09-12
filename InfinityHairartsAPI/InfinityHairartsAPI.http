@@ -1,0 +1,6 @@
+@InfinityHairartsAPI_HostAddress = http://localhost:5120
+
+GET {{InfinityHairartsAPI_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
