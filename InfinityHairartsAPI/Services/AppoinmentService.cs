@@ -15,6 +15,12 @@ namespace InfinityHairartsAPI.Services
 {
     public class AppoinmentService
     {
+        private sealed class CheckoutSlotLock
+        {
+            public DateTime BookingDate { get; set; }
+            public Guid TimeAllocationID { get; set; }
+        }
+
         SqlConnection con;
         private readonly IHttpContextAccessor _httpContextAccessor;
         private readonly IConfiguration _configuration;
@@ -1026,31 +1032,10 @@ namespace InfinityHairartsAPI.Services
                         }
                     }
 
-                    var selectedTimeIds = new HashSet<string>(
-                        DTSelectedTimeAllocation.AsEnumerable()
-                            .Select(row => Convert.ToString(row["TimeAllocationID"]))
-                            .Where(id => !string.IsNullOrWhiteSpace(id)),
-                        StringComparer.OrdinalIgnoreCase);
-
-                    int seatSelectionCount = 0;
-                    if (DTSeatBookingDetails.Rows.Count > 0 && DTSeatBookingDetails.Columns.Contains("SeatCount") &&
-                        int.TryParse(Convert.ToString(DTSeatBookingDetails.Rows[0]["SeatCount"]), out var currentSeatCount))
-                    {
-                        seatSelectionCount = currentSeatCount;
-                    }
-
-                    if (seatSelectionCount > 0 && selectedTimeIds.Count >= seatSelectionCount)
-                    {
-                        foreach (DataRow timeAllocation in DT.Rows)
-                        {
-                            var timeAllocationId = Convert.ToString(timeAllocation["TimeAllocationID"]);
-                            if (!selectedTimeIds.Contains(timeAllocationId))
-                            {
-                                timeAllocation["EnableDisable"] = "Disable";
-                            }
-                        }
-                    }
-
+                    // This list excludes the current booking. Its count must not
+                    // consume the new booking's seat allowance or disable free slots.
+                    // Return these occupied IDs separately; retain the availability
+                    // flags already calculated above for every other time slot.
                     listSelectedTimeAllocation = convertDatatabletoList(DTSelectedTimeAllocation);
 
                 }
@@ -1681,19 +1666,95 @@ namespace InfinityHairartsAPI.Services
                     }
                     if (DtHairCutItemBillMaster.Rows.Count == 0)
                     {
-                        using (con = DBConnection())
+                        if (!Guid.TryParse(SeatBookingDetailsID, out var currentSeatBookingDetailsID) ||
+                            !Guid.TryParse(CustomerID, out var currentCustomerID))
                         {
-                            var Parameter = new DynamicParameters();
-                            Parameter.Add("UniqueBillID", UniqueBillID);
-                            con.Execute("SelectInsertPrimaryToConstant", Parameter, commandType: CommandType.StoredProcedure, commandTimeout: 0);
+                            return "Time Slot Unavailable";
                         }
+
                         using (con = DBConnection())
                         {
-                            var Parameter = new DynamicParameters();
-                            Parameter.Add("SeatBookingDetailsID", SeatBookingDetailsID);
-                            Parameter.Add("CustomerID", CustomerID);
-                            Parameter.Add("BookingStatusMasterID", 2);
-                            con.Execute("updateBookingStatus", Parameter, commandType: CommandType.StoredProcedure, commandTimeout: 0);
+                            using var transaction = con.BeginTransaction(IsolationLevel.Serializable);
+
+                            // Lock each selected date/time until confirmation finishes. This
+                            // prevents two simultaneous checkouts from confirming the same slot.
+                            var selectedSlots = con.Query<CheckoutSlotLock>(@"
+                                SELECT SB.BookingDate, CT.TimeAllocationID
+                                FROM SeatBookingDetails SB
+                                INNER JOIN CustomerTimeSelection CT
+                                    ON CT.SeatBookingDetailsID = SB.SeatBookingDetailsID
+                                WHERE SB.SeatBookingDetailsID = @SeatBookingDetailsID
+                                  AND SB.CustomerID = @CustomerID
+                                ORDER BY SB.BookingDate, CT.TimeAllocationID",
+                                new
+                                {
+                                    SeatBookingDetailsID = currentSeatBookingDetailsID,
+                                    CustomerID = currentCustomerID
+                                }, transaction: transaction).ToList();
+
+                            if (selectedSlots.Count == 0)
+                            {
+                                transaction.Rollback();
+                                return "Time Slot Unavailable";
+                            }
+
+                            foreach (var slot in selectedSlots)
+                            {
+                                var lockResult = con.ExecuteScalar<int>(@"
+                                    DECLARE @Result int;
+                                    EXEC @Result = sys.sp_getapplock
+                                        @Resource = @Resource,
+                                        @LockMode = 'Exclusive',
+                                        @LockOwner = 'Transaction',
+                                        @LockTimeout = 10000;
+                                    SELECT @Result;",
+                                    new { Resource = $"InfinityHairArts:Slot:{slot.BookingDate:yyyyMMdd}:{slot.TimeAllocationID:D}" },
+                                    transaction: transaction);
+                                if (lockResult < 0)
+                                {
+                                    throw new TimeoutException("Unable to lock the selected booking slot.");
+                                }
+                            }
+
+                            var conflictCount = con.ExecuteScalar<int>(@"
+                                SELECT COUNT(1)
+                                FROM CustomerTimeSelection CurrentSelection
+                                INNER JOIN SeatBookingDetails CurrentBooking
+                                    ON CurrentBooking.SeatBookingDetailsID = CurrentSelection.SeatBookingDetailsID
+                                INNER JOIN CustomerTimeSelection ConfirmedSelection
+                                    ON ConfirmedSelection.TimeAllocationID = CurrentSelection.TimeAllocationID
+                                   AND ConfirmedSelection.SeatBookingDetailsID <> CurrentSelection.SeatBookingDetailsID
+                                INNER JOIN SeatBookingDetails ConfirmedBooking
+                                    ON ConfirmedBooking.SeatBookingDetailsID = ConfirmedSelection.SeatBookingDetailsID
+                                   AND ConfirmedBooking.BookingDate = CurrentBooking.BookingDate
+                                WHERE CurrentSelection.SeatBookingDetailsID = @SeatBookingDetailsID
+                                  AND CurrentBooking.CustomerID = @CustomerID
+                                  AND ConfirmedBooking.BookingStatusMasterID = 2",
+                                new
+                                {
+                                    SeatBookingDetailsID = currentSeatBookingDetailsID,
+                                    CustomerID = currentCustomerID
+                                }, transaction: transaction);
+
+                            if (conflictCount > 0)
+                            {
+                                transaction.Rollback();
+                                return "Time Slot Unavailable";
+                            }
+
+                            var insertParameter = new DynamicParameters();
+                            insertParameter.Add("UniqueBillID", UniqueBillID);
+                            con.Execute("SelectInsertPrimaryToConstant", insertParameter,
+                                transaction: transaction, commandType: CommandType.StoredProcedure, commandTimeout: 0);
+
+                            var statusParameter = new DynamicParameters();
+                            statusParameter.Add("SeatBookingDetailsID", currentSeatBookingDetailsID);
+                            statusParameter.Add("CustomerID", currentCustomerID);
+                            statusParameter.Add("BookingStatusMasterID", 2);
+                            con.Execute("updateBookingStatus", statusParameter,
+                                transaction: transaction, commandType: CommandType.StoredProcedure, commandTimeout: 0);
+
+                            transaction.Commit();
                         }
 
                         Message = "Success";
@@ -1809,7 +1870,11 @@ namespace InfinityHairartsAPI.Services
                 Count = Result.Item2;
                 if (Message == "Success" && Count == 0)
                 {
-                    clientSideCheckoutCartItem();
+                    var checkoutResult = clientSideCheckoutCartItem();
+                    if (checkoutResult.Item1 != "Success")
+                    {
+                        return Tuple.Create(checkoutResult.Item1);
+                    }
                     string CustomerMobileNumber = string.Empty;
                     string CustomerAddress = string.Empty;
                     string FullTiming = string.Empty;

@@ -8,6 +8,7 @@ namespace InfinityHairartsAPI.Controllers
 {
     [ApiController]
     [Route("api/[controller]")]
+    [SessionTimeout]
     public class AppoinmentController : ControllerBase
     {
         private readonly IConfiguration _configuration;

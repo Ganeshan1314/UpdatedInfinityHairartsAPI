@@ -41,6 +41,7 @@ namespace InfinityHairartsAPI.Controllers
         }
 
         [HttpPost("uploadCustomerImage")]
+        [SessionTimeout]
         public async Task<ActionResult> UploadCustomerImage(IFormFile file)
         {
             if (file == null || file.Length == 0)
@@ -53,6 +54,7 @@ namespace InfinityHairartsAPI.Controllers
         }
 
         [HttpPost("updateCustomerRegistration")]
+        [SessionTimeout]
         public ActionResult UpdateCustomerRegistration([FromBody] UpdateCustomerProfileRequest modal)
         {
             return Ok(_loginservice.updateCustomerRegistration(modal));
@@ -61,10 +63,12 @@ namespace InfinityHairartsAPI.Controllers
         [HttpGet("clearSessionValues")]
         public ActionResult ClearSessionValues()
         {
+            HttpContext.Session.Clear();
             return new JsonResult("Success");
         }
 
         [HttpPost("getEmployeeDetails")]
+        [SessionTimeout]
         public ActionResult GetEmployeeDetails()
         {
             return Ok(_loginservice.getEmployeeDetails());

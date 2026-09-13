@@ -1,31 +1,24 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
-using System;
-using System.Collections.Generic;
-using System.Configuration;
-using System.Linq;
-using System.Web;
+namespace InfinityHairartsAPI.Services;
 
-
-namespace InfinityHairartsAPI.Services
+/// <summary>
+/// Requires a live customer session for customer-specific API endpoints.
+/// ASP.NET Core removes CustomerID after the configured idle timeout.
+/// </summary>
+[AttributeUsage(AttributeTargets.Class | AttributeTargets.Method, AllowMultiple = false, Inherited = true)]
+public sealed class SessionTimeoutAttribute : ActionFilterAttribute
 {
-    public class SessionTimeout : ActionFilterAttribute
+    public override void OnActionExecuting(ActionExecutingContext context)
     {
-        public override void OnActionExecuted(ActionExecutedContext context)
+        var customerId = context.HttpContext.Session.GetString("CustomerID");
+        if (Guid.TryParse(customerId, out _))
         {
-            var customerId = context.HttpContext.Session.GetString("CustomerID");
-            if (customerId == "")
-            {
-                //HttpContext.Session.Clear();
-                //context.Result = new RedirectResult(ConfigurationManager.AppSettings["LoginUrl"]);
-                context.Result = new RedirectToRouteResult(
-                    new RouteValueDictionary(new
-                    {
-                        controller = "Login",
-                        action = "Login"
-                    })
-                );
-            }
+            return;
         }
+
+        // The Ionic HTTP interceptor handles 401 and redirects to /login.
+        // Include item1 to preserve compatibility with existing API responses.
+        context.Result = new UnauthorizedObjectResult(new { item1 = "Session Expired" });
     }
 }

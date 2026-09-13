@@ -34,10 +34,18 @@ builder.Services.AddScoped<LoginService>();
 
 builder.Services.AddDistributedMemoryCache();
 
+var sessionIdleTimeoutMinutes = builder.Configuration.GetValue<int?>("Session:IdleTimeoutMinutes") ?? 30;
+if (sessionIdleTimeoutMinutes <= 0)
+{
+    throw new InvalidOperationException("Session:IdleTimeoutMinutes must be greater than zero.");
+}
+
 builder.Services.AddSession(options =>
 {
-    options.IdleTimeout = TimeSpan.FromMinutes(30);
-    options.Cookie.MaxAge = TimeSpan.FromMinutes(30);
+    // Server-side, sliding expiration. The session data is removed after the
+    // configured period of inactivity, even if the browser still has a cookie.
+    options.IdleTimeout = TimeSpan.FromMinutes(sessionIdleTimeoutMinutes);
+    options.Cookie.Name = ".InfinityHairArts.Session";
     options.Cookie.HttpOnly = true;
     options.Cookie.IsEssential = true;
     options.Cookie.SameSite = SameSiteMode.None;
