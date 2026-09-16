@@ -31,6 +31,10 @@ builder.Services.AddCors(options =>
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddHttpClient();
 builder.Services.AddScoped<LoginService>();
+builder.Services.Configure<BookingReminderOptions>(builder.Configuration.GetSection("Notifications"));
+builder.Services.AddSingleton<NotificationRepository>();
+builder.Services.AddSingleton<FirebasePushNotificationSender>();
+builder.Services.AddHostedService<BookingReminderWorker>();
 
 builder.Services.AddDistributedMemoryCache();
 
