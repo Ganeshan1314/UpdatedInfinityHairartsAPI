@@ -33,7 +33,10 @@ namespace InfinityHairartsAPI.Controllers
         {
             int SeatCount = seatBookingModal.SeatCount;
             DateTime BookingDate = Convert.ToDateTime(seatBookingModal.BookingDate);
-            return new JsonResult(_appoinmentService.insertupdateSeatBookingDetails(SeatCount, BookingDate));
+            return new JsonResult(_appoinmentService.insertupdateSeatBookingDetails(
+                SeatCount,
+                BookingDate,
+                seatBookingModal.SalonMasterID));
             //return new JsonResult("");
         }
         [HttpPost("insertCustomerTimeSelection")]
