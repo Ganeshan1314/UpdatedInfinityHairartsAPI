@@ -283,7 +283,12 @@ namespace InfinityHairartsAPI.Services
                 {
                     var Parameter = new DynamicParameters();
                     Parameter.Add("CustomerID", CustomerID);
-                    var Reader = con.ExecuteReader("getClientBillMasterByCustomerID", Parameter, commandType: CommandType.StoredProcedure, commandTimeout: 0);
+                    Parameter.Add("SeatBookingDetailsID", SeatBookingDetailsID);
+                    var Reader = con.ExecuteReader(
+                        "getLatestActiveHairCutItemBillMasterPrimary",
+                        Parameter,
+                        commandType: CommandType.StoredProcedure,
+                        commandTimeout: 0);
                     DTHairCutItemBillMaster = new DataTable();
                     DTHairCutItemBillMaster.Load(Reader);
                 }
@@ -293,13 +298,17 @@ namespace InfinityHairartsAPI.Services
                     {
                         var Parameter = new DynamicParameters();
                         Parameter.Add("UniqueBillID", UniqueBillID);
-                        //Parameter.Add("SeatBookingDetailsID", SeatBookingDetailsID);
+                        Parameter.Add("SeatBookingDetailsID", SeatBookingDetailsID);
                         Parameter.Add("CustomerBillID", CustomerBillID);
                         Parameter.Add("BillIDFormat", BillIDFormat);
                         Parameter.Add("CusotmerBillCount", CusotmerBillCount);
                         Parameter.Add("CreatedBy", CustomerID);
                         Parameter.Add("CreatedDate", CreateDate);
-                        con.Execute("InsertUniqueClientSideBillIDValuePrimary", Parameter, commandType: CommandType.StoredProcedure, commandTimeout: 0);
+                        con.Execute(
+                            "insertHairCutItemBillMasterPrimary",
+                            Parameter,
+                            commandType: CommandType.StoredProcedure,
+                            commandTimeout: 0);
                         _httpContextAccessor?.HttpContext?.Session?.SetString("UniqueBillID", UniqueBillID.ToString());
                         _httpContextAccessor?.HttpContext?.Session?.SetString("CustomerBillID", CustomerBillID.ToString());
 
@@ -432,10 +441,13 @@ namespace InfinityHairartsAPI.Services
             List<Dictionary<string, object>> listCartItems = new List<Dictionary<string, object>>();
             DataTable DTCartItems = new DataTable();
             Guid CustomerID = Guid.Empty;
+            Guid UniqueBillID = Guid.Empty;
             string itemSelectedOrNot = string.Empty;
             //_httpContextAccessor?.HttpContext?.Session?.GetString("CustomerID");
             var varCustomerID = _httpContextAccessor?.HttpContext?.Session?.GetString("CustomerID");
             CustomerID = !string.IsNullOrWhiteSpace(varCustomerID) ? new Guid(varCustomerID) : Guid.Empty;
+            var varUniqueBillID = _httpContextAccessor?.HttpContext?.Session?.GetString("UniqueBillID");
+            UniqueBillID = !string.IsNullOrWhiteSpace(varUniqueBillID) ? new Guid(varUniqueBillID) : Guid.Empty;
             try
             {
                 if (CustomerID == Guid.Empty)
@@ -443,13 +455,21 @@ namespace InfinityHairartsAPI.Services
                     Message = "Session Expired";
                     return Tuple.Create(Message, listCartItems, "");
                 }
-                
-                using (con = DBConnection())
+
+                if (UniqueBillID != Guid.Empty)
                 {
-                    var Parameter = new DynamicParameters();
-                    Parameter.Add("CustomerID", CustomerID);
-                    var Reader = con.ExecuteReader("getClientSideCartItems", Parameter, commandType: CommandType.StoredProcedure, commandTimeout: 0);
-                    DTCartItems.Load(Reader);
+                    using (con = DBConnection())
+                    {
+                        var Parameter = new DynamicParameters();
+                        Parameter.Add("CustomerID", CustomerID);
+                        Parameter.Add("UniqueBillID", UniqueBillID);
+                        var Reader = con.ExecuteReader(
+                            "getClientSideCartItemsByBill",
+                            Parameter,
+                            commandType: CommandType.StoredProcedure,
+                            commandTimeout: 0);
+                        DTCartItems.Load(Reader);
+                    }
                 }
                 if (DTCartItems.Rows.Count == 0)
                 {
@@ -581,9 +601,10 @@ namespace InfinityHairartsAPI.Services
                 var varCustomerID = Convert.ToString(_httpContextAccessor?.HttpContext?.Session?.GetString("CustomerID"));
                 CustomerID = !string.IsNullOrEmpty(varCustomerID) ? new Guid(varCustomerID) : Guid.Empty;
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-
+                LogError log = new LogError();
+                log.Error(ex);
             }   
             
             return CustomerID;
@@ -597,9 +618,10 @@ namespace InfinityHairartsAPI.Services
                 var varUniqueBillID = Convert.ToString(_httpContextAccessor?.HttpContext?.Session?.GetString("UniqueBillID"));
                 UniqueBillID = !string.IsNullOrEmpty(varUniqueBillID) ? new Guid(varUniqueBillID) : Guid.Empty;
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-
+                LogError log = new LogError();
+                log.Error(ex);
             }
 
             return UniqueBillID;
@@ -944,15 +966,11 @@ namespace InfinityHairartsAPI.Services
                     var Parameter = new DynamicParameters();
                     Parameter.Add("BookingDate", Convert.ToDateTime(BookingDate).Date);
                       Parameter.Add("CurrentSeatBookingDetailsID", SeatBookingDetailsID);
-                    var Reader = con.ExecuteReader(@"
-                        SELECT DISTINCT CT.TimeAllocationID
-                        FROM CustomerTimeSelection CT
-                        INNER JOIN SeatBookingDetails SB ON SB.SeatBookingDetailsID = CT.SeatBookingDetailsID
-                        WHERE CONVERT(date, SB.BookingDate) = @BookingDate
-                          AND SB.SeatBookingDetailsID <> @CurrentSeatBookingDetailsID
-                          AND SB.BookingStatusMasterID = 2
-                                                    
-                        ", Parameter, commandType: CommandType.Text, commandTimeout: 0);
+                    var Reader = con.ExecuteReader(
+                        "getBookedTimeAllocationsByDate",
+                        Parameter,
+                        commandType: CommandType.StoredProcedure,
+                        commandTimeout: 0);
                     var bookedByOtherCustomer = new DataTable();
                     bookedByOtherCustomer.Load(Reader);
 
@@ -1080,7 +1098,7 @@ namespace InfinityHairartsAPI.Services
 
             return Tuple.Create(Message, list, SeatBookingDetailsCount, listSelectedTimeAllocation, listDateValues);
         }
-        public Tuple<string, int, List<Dictionary<string, object>>, List<string>> insertupdateSeatBookingDetails(int SeatCount, DateTime BookingDate)
+        public Tuple<string, int, List<Dictionary<string, object>>, List<string>> insertupdateSeatBookingDetails(int SeatCount, DateTime BookingDate, Guid SalonMasterID)
         {
             List<Dictionary<string, object>> list = new List<Dictionary<string, object>>();
             DataTable DT = new DataTable();
@@ -1102,6 +1120,22 @@ namespace InfinityHairartsAPI.Services
             {
                 try
                 {
+                    if (SalonMasterID == Guid.Empty)
+                    {
+                        return Tuple.Create("Salon Required", SeatCount, list, TimeAllocationIDList);
+                    }
+
+                    using (con = DBConnection())
+                    {
+                        var activeSalonCount = con.ExecuteScalar<int>(
+                            "SELECT COUNT(1) FROM dbo.SalonMaster WHERE SalonMasterID = @SalonMasterID AND IsActive = 1",
+                            new { SalonMasterID });
+                        if (activeSalonCount == 0)
+                        {
+                            return Tuple.Create("Invalid Salon", SeatCount, list, TimeAllocationIDList);
+                        }
+                    }
+
                     using (con = DBConnection())
                     {
                         var Parameter = new DynamicParameters();
@@ -1171,7 +1205,11 @@ namespace InfinityHairartsAPI.Services
                                 Parameter.Add("SeatBookingDetailsID", SeatBookingDetailsID);
                                 Parameter.Add("CustomerID", CustomerID);
                                 DTCustomerTimeSelection = new DataTable();
-                                var Reader = con.ExecuteReader("countCustomerTimeSelection", Parameter, commandType: CommandType.StoredProcedure, commandTimeout: 0);
+                                var Reader = con.ExecuteReader(
+                                    "getCustomerTimeSelections",
+                                    Parameter,
+                                    commandType: CommandType.StoredProcedure,
+                                    commandTimeout: 0);
                                 DTCustomerTimeSelection.Load(Reader);
                             }
                             if (DTCustomerTimeSelection.Rows.Count > 0)
@@ -1185,6 +1223,15 @@ namespace InfinityHairartsAPI.Services
                                 }
                             }
                         }
+                    }
+                    using (con = DBConnection())
+                    {
+                        con.Execute(
+                            @"UPDATE dbo.SeatBookingDetails
+                              SET SalonMasterID = @SalonMasterID
+                              WHERE SeatBookingDetailsID = @SeatBookingDetailsID
+                                AND CustomerID = @CustomerID",
+                            new { SalonMasterID, SeatBookingDetailsID, CustomerID });
                     }
                     using (con = DBConnection())
                     {
@@ -1257,15 +1304,11 @@ namespace InfinityHairartsAPI.Services
                         // same calendar date as the current customer's own booking. TimeAllocationID
                         // values are reused every day, so comparing without the date scope caused every
                         // slot to be reported as booked once any customer had ever picked that time.
-                        var alreadySelected = con.ExecuteScalar<int>(@"
-                            SELECT COUNT(1)
-                            FROM CustomerTimeSelection CT
-                            INNER JOIN SeatBookingDetails SB ON SB.SeatBookingDetailsID = CT.SeatBookingDetailsID
-                            INNER JOIN SeatBookingDetails MySB ON MySB.SeatBookingDetailsID = @SeatBookingDetailsID
-                            WHERE CT.TimeAllocationID = @TimeAllocationID
-                              AND CT.CustomerID <> @CustomerID
-                                                            AND CAST(SB.BookingDate AS DATE) = CAST(MySB.BookingDate AS DATE)
-                                                            AND SB.CreatedOn >= DATEADD(MINUTE, -10, GETDATE())", Parameter, commandType: CommandType.Text, commandTimeout: 0);
+                        var alreadySelected = con.ExecuteScalar<int>(
+                            "countRecentConflictingTimeAllocation",
+                            Parameter,
+                            commandType: CommandType.StoredProcedure,
+                            commandTimeout: 0);
 
                         if (alreadySelected > 0)
                         {
@@ -1276,9 +1319,13 @@ namespace InfinityHairartsAPI.Services
                     using (con = DBConnection())
                     {
                         var Parameter = new DynamicParameters();
-                        //Parameter.Add("SeatBookingDetailsID", SeatBookingDetailsID);
+                        Parameter.Add("SeatBookingDetailsID", SeatBookingDetailsID);
                         Parameter.Add("CustomerID", CustomerID);
-                        var Reader = con.ExecuteReader("countCustomerTimeSelection", Parameter, commandType: CommandType.StoredProcedure, commandTimeout: 0);
+                        var Reader = con.ExecuteReader(
+                            "getCustomerTimeSelections",
+                            Parameter,
+                            commandType: CommandType.StoredProcedure,
+                            commandTimeout: 0);
                         DTTimeAllocation = new DataTable();
                         DTTimeAllocation.Load(Reader);
                         countseatsTimeSelection = Convert.ToInt32(DTTimeAllocation.Rows.Count);
@@ -1433,9 +1480,13 @@ namespace InfinityHairartsAPI.Services
                     using (con = DBConnection())
                     {
                         var Parameter = new DynamicParameters();
-                        //Parameter.Add("SeatBookingDetailsID", SeatBookingDetailsID);
+                        Parameter.Add("SeatBookingDetailsID", SeatBookingDetailsID);
                         Parameter.Add("CustomerID", CustomerID);
-                        var Reader = con.ExecuteReader("countCustomerTimeSelection", Parameter, commandType: CommandType.StoredProcedure, commandTimeout: 0);
+                        var Reader = con.ExecuteReader(
+                            "getCustomerTimeSelections",
+                            Parameter,
+                            commandType: CommandType.StoredProcedure,
+                            commandTimeout: 0);
                         DTTimeSelection = new DataTable();
                         DTTimeSelection.Load(Reader);
                     }
@@ -1678,19 +1729,15 @@ namespace InfinityHairartsAPI.Services
 
                             // Lock each selected date/time until confirmation finishes. This
                             // prevents two simultaneous checkouts from confirming the same slot.
-                            var selectedSlots = con.Query<CheckoutSlotLock>(@"
-                                SELECT SB.BookingDate, CT.TimeAllocationID
-                                FROM SeatBookingDetails SB
-                                INNER JOIN CustomerTimeSelection CT
-                                    ON CT.SeatBookingDetailsID = SB.SeatBookingDetailsID
-                                WHERE SB.SeatBookingDetailsID = @SeatBookingDetailsID
-                                  AND SB.CustomerID = @CustomerID
-                                ORDER BY SB.BookingDate, CT.TimeAllocationID",
+                            var selectedSlots = con.Query<CheckoutSlotLock>(
+                                "getCheckoutSelectedSlots",
                                 new
                                 {
                                     SeatBookingDetailsID = currentSeatBookingDetailsID,
                                     CustomerID = currentCustomerID
-                                }, transaction: transaction).ToList();
+                                },
+                                transaction: transaction,
+                                commandType: CommandType.StoredProcedure).ToList();
 
                             if (selectedSlots.Count == 0)
                             {
@@ -1700,41 +1747,26 @@ namespace InfinityHairartsAPI.Services
 
                             foreach (var slot in selectedSlots)
                             {
-                                var lockResult = con.ExecuteScalar<int>(@"
-                                    DECLARE @Result int;
-                                    EXEC @Result = sys.sp_getapplock
-                                        @Resource = @Resource,
-                                        @LockMode = 'Exclusive',
-                                        @LockOwner = 'Transaction',
-                                        @LockTimeout = 10000;
-                                    SELECT @Result;",
+                                var lockResult = con.ExecuteScalar<int>(
+                                    "acquireBookingSlotLock",
                                     new { Resource = $"InfinityHairArts:Slot:{slot.BookingDate:yyyyMMdd}:{slot.TimeAllocationID:D}" },
-                                    transaction: transaction);
+                                    transaction: transaction,
+                                    commandType: CommandType.StoredProcedure);
                                 if (lockResult < 0)
                                 {
                                     throw new TimeoutException("Unable to lock the selected booking slot.");
                                 }
                             }
 
-                            var conflictCount = con.ExecuteScalar<int>(@"
-                                SELECT COUNT(1)
-                                FROM CustomerTimeSelection CurrentSelection
-                                INNER JOIN SeatBookingDetails CurrentBooking
-                                    ON CurrentBooking.SeatBookingDetailsID = CurrentSelection.SeatBookingDetailsID
-                                INNER JOIN CustomerTimeSelection ConfirmedSelection
-                                    ON ConfirmedSelection.TimeAllocationID = CurrentSelection.TimeAllocationID
-                                   AND ConfirmedSelection.SeatBookingDetailsID <> CurrentSelection.SeatBookingDetailsID
-                                INNER JOIN SeatBookingDetails ConfirmedBooking
-                                    ON ConfirmedBooking.SeatBookingDetailsID = ConfirmedSelection.SeatBookingDetailsID
-                                   AND ConfirmedBooking.BookingDate = CurrentBooking.BookingDate
-                                WHERE CurrentSelection.SeatBookingDetailsID = @SeatBookingDetailsID
-                                  AND CurrentBooking.CustomerID = @CustomerID
-                                  AND ConfirmedBooking.BookingStatusMasterID = 2",
+                            var conflictCount = con.ExecuteScalar<int>(
+                                "countConfirmedCheckoutSlotConflicts",
                                 new
                                 {
                                     SeatBookingDetailsID = currentSeatBookingDetailsID,
                                     CustomerID = currentCustomerID
-                                }, transaction: transaction);
+                                },
+                                transaction: transaction,
+                                commandType: CommandType.StoredProcedure);
 
                             if (conflictCount > 0)
                             {
@@ -1753,6 +1785,17 @@ namespace InfinityHairartsAPI.Services
                             statusParameter.Add("BookingStatusMasterID", 2);
                             con.Execute("updateBookingStatus", statusParameter,
                                 transaction: transaction, commandType: CommandType.StoredProcedure, commandTimeout: 0);
+
+                            con.Execute(
+                                "deleteClientSideCartItemsByBill",
+                                new
+                                {
+                                    UniqueBillID,
+                                    CustomerID = currentCustomerID
+                                },
+                                transaction: transaction,
+                                commandType: CommandType.StoredProcedure,
+                                commandTimeout: 0);
 
                             transaction.Commit();
                         }

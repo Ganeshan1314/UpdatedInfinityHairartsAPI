@@ -6,6 +6,7 @@
         {
             public int SeatCount { get; set; }
             public string BookingDate { get; set; }
+            public Guid SalonMasterID { get; set; }
         }
         public class insertCustomerTimeSelection
         {

@@ -91,9 +91,9 @@ namespace InfinityHairartsAPI.Services
                     var Parameter = new DynamicParameters();
                     Parameter.Add("MobileNo", MobileNo);
                     var Reader = con.ExecuteReader(
-                        "SELECT FirstName, EmailAddress, GeneralAddress, ImageName, MobileNo, CustomerID FROM CustomerRegistration WHERE MobileNo = @MobileNo",
+                        "getCustomerProfileByMobileNumber",
                         Parameter,
-                        commandType: CommandType.Text,
+                        commandType: CommandType.StoredProcedure,
                         commandTimeout: 0);
                     DT.Load(Reader);
                     if (DT.Rows.Count > 0)

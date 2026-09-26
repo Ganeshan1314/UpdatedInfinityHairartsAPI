@@ -16,7 +16,7 @@ namespace InfinityHairartsAPI.Services.Interfaces
         Tuple<string, List<Dictionary<string, object>>> getSearchHairCutItemAutoComplete(Guid HairCut_Item_ID);
         Tuple<string, List<Dictionary<string, object>>> getHairCutItemListByName(string HairCut_Item_Name);
         Tuple<string, List<Dictionary<string, object>>, int, List<Dictionary<string, object>>, List<Dictionary<string, object>>> getSeatTimeAllocation();
-        Tuple<string, int, List<Dictionary<string, object>>, List<string>> insertupdateSeatBookingDetails(int SeatCount, DateTime BookingDate);
+        Tuple<string, int, List<Dictionary<string, object>>, List<string>> insertupdateSeatBookingDetails(int SeatCount, DateTime BookingDate, Guid SalonMasterID);
         Tuple<string, Guid, string> insertCustomerTimeSelection(Guid TimeAllocationID);
         Tuple<string, Guid> deleteCustomerTimeSelection(Guid TimeAllocationID);
         Tuple<string, string, int> goNextSeatSelection();

@@ -3,6 +3,35 @@ using Microsoft.Extensions.FileProviders;
 
 var builder = WebApplication.CreateBuilder(args);
 
+if (builder.Configuration.GetValue("FileLogging:Enabled", true))
+{
+    DailyFileLogWriter.Configure(builder.Configuration);
+    builder.Logging.AddProvider(new DailyFileLoggerProvider(builder.Configuration));
+
+    AppDomain.CurrentDomain.UnhandledException += (_, eventArgs) =>
+    {
+        if (eventArgs.ExceptionObject is Exception exception)
+        {
+            DailyFileLogWriter.Write(
+                LogLevel.Critical,
+                "InfinityHairartsAPI.Process",
+                default,
+                "An unhandled process exception terminated the API.",
+                exception);
+        }
+    };
+
+    TaskScheduler.UnobservedTaskException += (_, eventArgs) =>
+    {
+        DailyFileLogWriter.Write(
+            LogLevel.Error,
+            "InfinityHairartsAPI.BackgroundTask",
+            default,
+            "An unobserved background task exception occurred.",
+            eventArgs.Exception);
+    };
+}
+
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
@@ -31,6 +60,10 @@ builder.Services.AddCors(options =>
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddHttpClient();
 builder.Services.AddScoped<LoginService>();
+builder.Services.AddScoped<LocationService>();
+builder.Services.AddScoped<SalonOwnerAuthenticationService>();
+builder.Services.AddScoped<SalonOwnerDashboardService>();
+builder.Services.AddScoped<BookingQrService>();
 builder.Services.Configure<BookingReminderOptions>(builder.Configuration.GetSection("Notifications"));
 builder.Services.AddSingleton<NotificationRepository>();
 builder.Services.AddSingleton<FirebasePushNotificationSender>();
@@ -52,8 +85,12 @@ builder.Services.AddSession(options =>
     options.Cookie.Name = ".InfinityHairArts.Session";
     options.Cookie.HttpOnly = true;
     options.Cookie.IsEssential = true;
-    options.Cookie.SameSite = SameSiteMode.None;
-    options.Cookie.SecurePolicy = CookieSecurePolicy.Always;
+    options.Cookie.SameSite = builder.Environment.IsDevelopment()
+        ? SameSiteMode.Lax
+        : SameSiteMode.None;
+    options.Cookie.SecurePolicy = builder.Environment.IsDevelopment()
+        ? CookieSecurePolicy.SameAsRequest
+        : CookieSecurePolicy.Always;
 });
 
 var app = builder.Build();
@@ -63,10 +100,15 @@ if (app.Environment.IsDevelopment())
     app.UseDeveloperExceptionPage();
 }
 
+app.UseMiddleware<GlobalExceptionLoggingMiddleware>();
+
 app.UseSwagger();
 app.UseSwaggerUI();
 
-app.UseHttpsRedirection();
+if (!app.Environment.IsDevelopment())
+{
+    app.UseHttpsRedirection();
+}
 
 app.UseStaticFiles(new StaticFileOptions
 {

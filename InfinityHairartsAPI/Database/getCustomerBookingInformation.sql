@@ -1,6 +1,5 @@
 ALTER PROCEDURE [dbo].[getCustomerBookingInformation]
-  @CustomerID uniqueidentifier,
-  @UniqueBillID uniqueidentifier
+  @CustomerID uniqueidentifier
 AS
 BEGIN
   SET NOCOUNT ON;
@@ -12,6 +11,7 @@ BEGIN
     TA.FullTiming,
     SB.BookingDate,
     SB.SeatCount,
+    Completion.CompletedUtc,
     ISNULL((
       SELECT SUM(A.HairCut_Item_Total)
       FROM HairCut_Item_Customer_Bill A
@@ -31,10 +31,9 @@ BEGIN
   INNER JOIN CustomerRegistration CR ON CR.CustomerID = SB.CustomerID
   LEFT JOIN CustomerTimeSelection CT ON CT.SeatBookingDetailsID = BM.SeatBookingDetailsID
   LEFT JOIN TimeAllocation TA ON TA.TimeAllocationID = CT.TimeAllocationID
+  LEFT JOIN BookingQrCompletion Completion
+    ON Completion.SeatBookingDetailsID = BM.SeatBookingDetailsID
+    AND Completion.TimeAllocationID = CT.TimeAllocationID
   WHERE SB.CustomerID = @CustomerID
-    AND (
-      @UniqueBillID = '00000000-0000-0000-0000-000000000000'
-      OR BM.UniqueBillID = @UniqueBillID
-    )
   ORDER BY SB.BookingDate DESC, BM.UniqueBillID DESC;
 END
