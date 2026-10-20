@@ -70,6 +70,8 @@ builder.Services.AddSingleton<FirebasePushNotificationSender>();
 builder.Services.AddHostedService<BookingReminderWorker>();
 
 builder.Services.AddDistributedMemoryCache();
+builder.Services.AddMemoryCache();
+builder.Services.AddSingleton<CustomerSessionRegistry>();
 
 var sessionIdleTimeoutMinutes = builder.Configuration.GetValue<int?>("Session:IdleTimeoutMinutes") ?? 30;
 if (sessionIdleTimeoutMinutes <= 0)
@@ -110,6 +112,7 @@ if (!app.Environment.IsDevelopment())
     app.UseHttpsRedirection();
 }
 
+Directory.CreateDirectory(Path.Combine(app.Environment.ContentRootPath, "CustomerImages"));
 app.UseStaticFiles(new StaticFileOptions
 {
     FileProvider = new PhysicalFileProvider(Path.Combine(app.Environment.ContentRootPath, "CustomerImages")),
@@ -121,6 +124,7 @@ app.UseRouting();
 app.UseCors("AllowIonic");
 
 app.UseSession();
+app.UseMiddleware<CustomerApiSessionMiddleware>();
 
 app.UseAuthorization();
 

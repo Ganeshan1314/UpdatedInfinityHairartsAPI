@@ -1,4 +1,5 @@
 ﻿using InfinityHairartsAPI.Services;
+using InfinityHairartsAPI.Modals;
 using Microsoft.AspNetCore.Mvc;
 using static InfinityHairartsAPI.Modals.LoginModal;
 
@@ -6,6 +7,7 @@ namespace InfinityHairartsAPI.Controllers
 {
     [ApiController]
     [Route("api/[controller]")]
+    [ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
     public class LoginController : ControllerBase
     {
         private readonly LoginService _loginservice;
@@ -33,12 +35,48 @@ namespace InfinityHairartsAPI.Controllers
             return Ok(_loginservice.checkCustomerMobileNumberExist(modal));
         }
 
-        [HttpPost("customerLoginButtomClick")]
-        public ActionResult CustomerLoginButtomClick([FromBody] CustomerLoginRequest modal)
-        {
-            var result = _loginservice.customerLoginButtomClick(modal);
-            return Ok(result);
-        }
+	[HttpPost("customerLoginButtomClick")]
+	public async Task<IActionResult> CustomerLoginButtomClick([FromBody] LoginModal.CustomerLoginRequest modal, [FromServices] CustomerSessionRegistry registry, CancellationToken token)
+	{
+		string text = modal.MobileNo?.Trim() ?? "";
+		if (!CustomerMobileNumber.IsValid(text))
+		{
+			return BadRequest(new
+			{
+				message = "Enter a valid mobile number."
+			});
+		}
+		registry.Revoke(base.HttpContext.Session);
+		CustomerSession.Clear(base.HttpContext.Session);
+		try
+		{
+			Tuple<string, List<Dictionary<string, object>>> result = _loginservice.customerLoginButtomClick(new LoginModal.CustomerLoginRequest
+			{
+				MobileNo = text,
+				Address = modal.Address?.Trim()
+			});
+			if (result.Item1 != "Success" || !Guid.TryParse(base.HttpContext.Session.GetString("CustomerID"), out var result2) || result2 == Guid.Empty)
+			{
+				CustomerSession.Clear(base.HttpContext.Session);
+				return StatusCode(503, new
+				{
+					message = "Sign-in is temporarily unavailable."
+				});
+			}
+			base.HttpContext.Session.SetString("CustomerAuthToken", registry.Create(result2));
+			await base.HttpContext.Session.CommitAsync(token);
+			return Ok(result);
+		}
+		catch (Exception ex) when (!(ex is OperationCanceledException))
+		{
+			registry.Revoke(base.HttpContext.Session);
+			CustomerSession.Clear(base.HttpContext.Session);
+			return StatusCode(503, new
+			{
+				message = "Sign-in is temporarily unavailable."
+			});
+		}
+	}
 
         [HttpPost("uploadCustomerImage")]
         [SessionTimeout]
@@ -60,12 +98,26 @@ namespace InfinityHairartsAPI.Controllers
             return Ok(_loginservice.updateCustomerRegistration(modal));
         }
 
-        [HttpGet("clearSessionValues")]
-        public ActionResult ClearSessionValues()
-        {
-            HttpContext.Session.Clear();
-            return new JsonResult("Success");
-        }
+	[HttpPost("logout")]
+	[HttpPost("clearSessionValues")]
+	[ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
+	public async Task<ActionResult> ClearSessionValues([FromServices] CustomerSessionRegistry registry, CancellationToken cancellationToken = default(CancellationToken))
+	{
+		if (base.Request.Headers["X-Salonexa-Request"] != "1")
+		{
+			return BadRequest(new
+			{
+				message = "Sign out using the application."
+			});
+		}
+		registry.Revoke(base.HttpContext.Session);
+		CustomerSession.Clear(base.HttpContext.Session);
+		await base.HttpContext.Session.CommitAsync(cancellationToken);
+		return new JsonResult("Success");
+	}
+
+        [HttpGet("session")]
+        public IActionResult SessionStatus() => Ok(new { item1 = "Success" });
 
         [HttpPost("getEmployeeDetails")]
         [SessionTimeout]
@@ -77,7 +129,7 @@ namespace InfinityHairartsAPI.Controllers
         [HttpGet("health")]
         public IActionResult Health()
         {
-            return Ok(new { status = "ok" });
+            return Ok(new { status = "ok", apiContract = "mobile-login-reservations-v1", build = "updated-api-20261020" });
         }
     }
 }

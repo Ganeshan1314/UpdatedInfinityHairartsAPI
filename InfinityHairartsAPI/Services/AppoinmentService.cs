@@ -1,7 +1,9 @@
-﻿using Dapper;
+using Dapper;
+using InfinityHairartsAPI.Modals;
 using Newtonsoft.Json;
 using System.Configuration;
 using System.Data;
+using System.Globalization;
 using System.Data.SqlClient;
 using System.Reflection;
 using System.Security.Cryptography;
@@ -593,6 +595,16 @@ namespace InfinityHairartsAPI.Services
             }
             return Tuple.Create(Message);
         }
+	public CustomerReservationStore ReservationStore()
+	{
+		return new CustomerReservationStore(_configuration);
+	}
+
+	public Guid CustomerID()
+	{
+		return getSessionvalueCustomerID();
+	}
+
         private Guid getSessionvalueCustomerID()
         {
             Guid CustomerID = Guid.Empty;
@@ -816,7 +828,9 @@ namespace InfinityHairartsAPI.Services
             }
             return Tuple.Create(Message, list);
         }
-        public Tuple<string, List<Dictionary<string, object>>, int, List<Dictionary<string, object>>, List<Dictionary<string, object>>> getSeatTimeAllocation()
+        public Tuple<string, List<Dictionary<string, object>>, int, List<Dictionary<string, object>>, List<Dictionary<string, object>>> getSeatTimeAllocation() => getSeatTimeAllocation(null);
+
+        public Tuple<string, List<Dictionary<string, object>>, int, List<Dictionary<string, object>>, List<Dictionary<string, object>>> getSeatTimeAllocation(DateTime? requestedBookingDate)
         {
             string Message = string.Empty;
             DataTable DT = new DataTable();
@@ -830,12 +844,13 @@ namespace InfinityHairartsAPI.Services
             int SeatBookingDetailsCount = 0;
             string BookingDate = string.Empty;
             bool showTomorrowOnly = false;
+            DateTime salonNow = CustomerBookingRules.Now;
             try
             {
-                string today = DateTime.Now.ToString("dd-MMM");
-                string tomorrow = Convert.ToDateTime(today).AddDays(1).ToString("dd-MMM");
-                string todayDayOftheWeek = DateTime.Now.ToString("dddd");
-                string tomorrowDayOftheWeek = Convert.ToDateTime(today).AddDays(1).ToString("dddd");
+                string today = salonNow.ToString("dd-MMM");
+                string tomorrow = salonNow.Date.AddDays(1).ToString("dd-MMM");
+                string todayDayOftheWeek = salonNow.ToString("dddd");
+                string tomorrowDayOftheWeek = salonNow.Date.AddDays(1).ToString("dddd");
 
                 dateArray[0] = today;
                 dateArray[1] = tomorrow;
@@ -864,21 +879,21 @@ namespace InfinityHairartsAPI.Services
                     DataColumn bookedColumn = new DataColumn("BookedByOtherCustomer", typeof(bool));
                     bookedColumn.DefaultValue = false;
                     DT.Columns.Add(bookedColumn);
-                    TimeSpan currentTime = DateTime.Now.TimeOfDay;
+                    TimeSpan currentTime = salonNow.TimeOfDay;
                     TimeSpan eightOClock = new TimeSpan(18, 01, 0);
                     if (currentTime > eightOClock || todayDayOftheWeek == "Friday")
                     {
                         TodayBooking = "Completed";
                         if (tomorrowDayOftheWeek == "Friday")
                         {
-                            tomorrow = Convert.ToDateTime(today).AddDays(2).ToString("dd-MMM");
+                            tomorrow = salonNow.Date.AddDays(2).ToString("dd-MMM");
                             dateArray[0] = tomorrow;
-                            BookingDate = Convert.ToDateTime(today).AddDays(2).ToString();
+                            BookingDate = salonNow.Date.AddDays(2).ToString();
                         }
                         else
                         {
                             dateArray[0] = tomorrow;
-                            BookingDate = Convert.ToDateTime(today).AddDays(1).ToString();
+                            BookingDate = salonNow.Date.AddDays(1).ToString();
                         }
 
                     }
@@ -887,14 +902,19 @@ namespace InfinityHairartsAPI.Services
                         TodayBooking = "Not Completed";
                         if (todayDayOftheWeek == "Friday")
                         {
-                            today = Convert.ToDateTime(today).AddDays(1).ToString("dd-MMM");
+                            today = salonNow.Date.AddDays(1).ToString("dd-MMM");
                             dateArray[0] = today;
-                            BookingDate = Convert.ToDateTime(today).AddDays(1).ToString();
+                            BookingDate = salonNow.Date.AddDays(1).ToString();
                         }
                         else
                         {
-                            BookingDate = Convert.ToDateTime(today).ToString();
+                            BookingDate = salonNow.Date.ToString();
                         }
+                    }
+                    if (requestedBookingDate.HasValue)
+                    {
+                        BookingDate = requestedBookingDate.Value.Date.ToString();
+                        TodayBooking = requestedBookingDate.Value.Date == salonNow.Date ? "Not Completed" : "Completed";
                     }
                     currentTime = currentTime.Add(new TimeSpan(1, 30, 0));
                     for (int i = 0; i < DT.Rows.Count; i++)
@@ -928,13 +948,15 @@ namespace InfinityHairartsAPI.Services
                     }
 
                     // If every slot for today has passed, show tomorrow's slots from the morning.
-                    if (TodayBooking == "Not Completed" &&
+                    if (!requestedBookingDate.HasValue && TodayBooking == "Not Completed" &&
                         !DT.AsEnumerable().Any(row => row["EnableDisable"].ToString() == "Enable"))
                     {
                         TodayBooking = "Completed";
                         showTomorrowOnly = true;
                         dateArray[0] = tomorrow;
-                        BookingDate = Convert.ToDateTime(today).AddDays(1).ToString();
+                        BookingDate = salonNow.Date.AddDays(1).ToString();
+                        if (Convert.ToDateTime(BookingDate).DayOfWeek == DayOfWeek.Friday)
+                            BookingDate = salonNow.Date.AddDays(2).ToString();
 
                         for (int i = 0; i < DT.Rows.Count; i++)
                         {
@@ -1043,7 +1065,7 @@ namespace InfinityHairartsAPI.Services
                         {
                             DataRow dr = DTSelectedTimeAllocation.Rows[i];
                             dateArray[0] = tomorrow;
-                            if (Convert.ToDateTime(dr["BookingDate"]).Date != Convert.ToDateTime(tomorrow).Date)
+                            if (Convert.ToDateTime(dr["BookingDate"]).Date != Convert.ToDateTime(BookingDate).Date)
                             {
                                 dr.Delete();
                             }
@@ -1064,7 +1086,7 @@ namespace InfinityHairartsAPI.Services
             {
                 LogError log = new LogError();
                 log.Error(ex);
-                Message = list.Count > 0 ? "Success" : "Error";
+                Message = "Error";
             }
             dateArray[2] = BookingDate;
             DataTable DTdateValues = new DataTable();
@@ -1073,21 +1095,22 @@ namespace InfinityHairartsAPI.Services
             DTdateValues.Columns.Add("Month",typeof(string));
             DTdateValues.Columns.Add("Year",typeof(string));
             DTdateValues.Columns.Add("FullDate",typeof(string));
+            DateTime firstDate = salonNow.Date;
+            if (salonNow > salonNow.Date.AddHours(18) || showTomorrowOnly)
+                firstDate = firstDate.AddDays(1);
+            if (!requestedBookingDate.HasValue && DateTime.TryParse(BookingDate, out var effectiveDate)
+                && effectiveDate.Date > firstDate)
+                firstDate = effectiveDate.Date;
             for (int i = 0; i < 5; i++)
             {
-                DateTime now = DateTime.Now;
-                DateTime eveningSix = DateTime.Today.AddHours(18);
-                if (now > eveningSix && i == 0)
-                {
-                    i++;
-                }
-                DateTime date = DateTime.Today.AddDays(i + (showTomorrowOnly ? 1 : 0));
+                DateTime date = firstDate.AddDays(i);
+                if (date > salonNow.Date.AddDays(5)) break;
 
                 string day = date.DayOfWeek.ToString();   // Monday
                 string month = date.ToString("MMMM");     // January
                 string fullDate = date.ToString("dd");
                 string year = date.ToString("yyyy");
-                string FullDate = date.ToString();
+                string FullDate = date.ToString("yyyy-MM-dd");
                 if(day != "Friday")
                 {
                     DTdateValues.Rows.Add(fullDate, day, month,year, FullDate);
@@ -1652,45 +1675,25 @@ namespace InfinityHairartsAPI.Services
             }
             return Tuple.Create(Message);
         }
-        public Tuple<string> clientSideCheckoutCartItem()
-        {
-            string Message = string.Empty;
-            DataTable DTPrimary = new DataTable();
-            try
-            {
-                Guid UniqueBillID = Guid.Empty;
-                var uniqueBillIdString = _httpContextAccessor?.HttpContext?.Session?.GetString("UniqueBillID");
-                if (!string.IsNullOrEmpty(uniqueBillIdString) && Guid.TryParse(uniqueBillIdString, out Guid parsedGuid))
-                {
-                    UniqueBillID = parsedGuid;
-                }
+	public Tuple<string> clientSideCheckoutCartItem(AppoinmentModal.ReviewTimeSelectionRequest? request = null)
+	{
+		Guid guid = CustomerID();
+		if (guid == Guid.Empty)
+		{
+			return Tuple.Create("Session Expired");
+		}
+		try
+		{
+			ReservationReply reservationReply = ReservationStore().Checkout(guid, getSessionvalueUniqueBillID(), request);
+			return Tuple.Create(reservationReply.Item1);
+		}
+		catch (Exception ex)
+		{
+			new LogError().Error(ex);
+			return Tuple.Create("Error");
+		}
+	}
 
-                using (con = DBConnection())
-                {
-                    var Parameter = new DynamicParameters();
-                    Parameter.Add("UniqueBillID", UniqueBillID);
-                    var Reader = con.ExecuteReader("countCustomerUniqueBillIDMasterPrimary", Parameter, commandType: CommandType.StoredProcedure, commandTimeout: 0);
-                    DTPrimary = new DataTable();
-                    DTPrimary.Load(Reader);
-                }
-                int countUniqueBillID = Convert.ToInt32(DTPrimary.Rows[0]["countUniqueBillID"]);
-                if (countUniqueBillID > 0)
-                {
-                    Message = SelectInsertPrimaryToConstant(UniqueBillID);
-                }
-                else
-                {
-                    Message = "Cart Empty";
-                }
-            }
-            catch (Exception ex)
-            {
-                LogError log = new LogError();
-                log.Error(ex);
-                Message = "Error";
-            }
-            return Tuple.Create(Message);
-        }
         private string SelectInsertPrimaryToConstant(Guid UniqueBillID)
         {
             string Message = string.Empty;

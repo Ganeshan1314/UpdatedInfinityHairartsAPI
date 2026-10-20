@@ -20,4 +20,10 @@
     <Folder Include="CustomerImages\" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Keep the server's existing connection settings and Firebase credentials when publishing. -->
+    <Content Update="appsettings*.json;infinity-hair-arts-firebase-adminsdk-*.json" CopyToPublishDirectory="Never" />
+    <Content Update="**/*.sql" CopyToPublishDirectory="Never" />
+  </ItemGroup>
+
 </Project>
