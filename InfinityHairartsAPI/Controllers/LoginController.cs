@@ -95,6 +95,10 @@ namespace InfinityHairartsAPI.Controllers
         [SessionTimeout]
         public ActionResult UpdateCustomerRegistration([FromBody] UpdateCustomerProfileRequest modal)
         {
+            if (!CustomerEmailAddress.IsValid(modal.EmailAddress))
+            {
+                return BadRequest(new { message = "Enter a valid Gmail address ending in @gmail.com." });
+            }
             return Ok(_loginservice.updateCustomerRegistration(modal));
         }
 

@@ -2,6 +2,7 @@
 .vs/
 **/bin/
 **/obj/
+**/App_Data/DataProtectionKeys/
 
 # Local application secrets and credentials
 InfinityHairartsAPI/appsettings.json

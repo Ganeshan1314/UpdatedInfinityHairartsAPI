@@ -128,7 +128,22 @@ public class AppoinmentController : ControllerBase
 				message = "Please choose an available booking date."
 			});
 		}
-		return new JsonResult(_appoinmentService.insertupdateSeatBookingDetails(1, date, seatBookingModal.SalonMasterID!.Value));
+		var result = _appoinmentService.insertupdateSeatBookingDetails(1, date, seatBookingModal.SalonMasterID!.Value);
+		if (result.Item1 != "Success") return new JsonResult(result);
+		try
+		{
+			// Return the saved version so the first time selection can proceed
+			// directly to the conflict-checked mutation without another times read.
+			return new JsonResult(new
+			{
+				result.Item1, result.Item2, result.Item3, result.Item4,
+				Draft = _appoinmentService.ReservationStore().GetDraft(_appoinmentService.CustomerID())
+			});
+		}
+		catch
+		{
+			return StatusCode(503, new { message = "Your prepared booking could not be confirmed. Please try again." });
+		}
 	}
 
 	[HttpPost("insertCustomerTimeSelection")]

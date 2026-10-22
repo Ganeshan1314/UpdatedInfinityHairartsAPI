@@ -315,7 +315,7 @@ namespace InfinityHairartsAPI.Services
                 cmd.CommandType = CommandType.StoredProcedure;
                 cmd.CommandTimeout = 0;
                 cmd.Connection = con;
-                cmd.CommandText = "getHairCut_Item_List";
+                cmd.CommandText = "getAllHairCut_Item_List";
                 SqlDataAdapter adp = new SqlDataAdapter(cmd);
                 DT = new DataTable();
                 adp.Fill(DT);

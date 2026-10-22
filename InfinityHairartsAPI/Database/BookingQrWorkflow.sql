@@ -53,6 +53,45 @@ BEGIN
 END;
 GO
 
+-- BookingStatusMasterID continues to represent reservation/payment confirmation.
+-- Visit completion is separate so completed visits still occupy their booked slots.
+IF COL_LENGTH(N'dbo.SeatBookingDetails', N'CompletionStatus') IS NULL
+    ALTER TABLE dbo.SeatBookingDetails ADD CompletionStatus NVARCHAR(16) NOT NULL
+        CONSTRAINT DF_SeatBookingDetails_CompletionStatus DEFAULT N'Pending' WITH VALUES
+        CONSTRAINT CK_SeatBookingDetails_CompletionStatus CHECK (CompletionStatus IN (N'Pending', N'Completed'));
+IF COL_LENGTH(N'dbo.SeatBookingDetails', N'CompletedUtc') IS NULL
+    ALTER TABLE dbo.SeatBookingDetails ADD CompletedUtc DATETIME2(0) NULL;
+GO
+
+-- Preserve completions already recorded by the previous QR workflow. A booking
+-- with several selected times completes only after every appointment QR is read.
+UPDATE SB
+SET CompletionStatus = N'Completed', CompletedUtc = Completion.CompletedUtc
+FROM dbo.SeatBookingDetails SB
+CROSS APPLY
+(
+    SELECT MAX(Q.CompletedUtc) AS CompletedUtc
+    FROM dbo.BookingQrCompletion Q
+    INNER JOIN dbo.CustomerTimeSelection CTS
+        ON CTS.SeatBookingDetailsID = Q.SeatBookingDetailsID
+       AND CTS.TimeAllocationID = Q.TimeAllocationID
+    WHERE Q.SeatBookingDetailsID = SB.SeatBookingDetailsID
+) Completion
+WHERE Completion.CompletedUtc IS NOT NULL
+  AND NOT EXISTS
+  (
+      SELECT 1 FROM dbo.CustomerTimeSelection CTS
+      WHERE CTS.SeatBookingDetailsID = SB.SeatBookingDetailsID
+        AND NOT EXISTS
+        (
+            SELECT 1 FROM dbo.BookingQrCompletion Q
+            WHERE Q.SeatBookingDetailsID = CTS.SeatBookingDetailsID
+              AND Q.TimeAllocationID = CTS.TimeAllocationID
+        )
+  )
+  AND (SB.CompletionStatus <> N'Completed' OR SB.CompletedUtc IS NULL);
+GO
+
 -- The legacy source tables do not consistently declare their ID columns as
 -- primary/unique keys, so SQL Server cannot create foreign keys to them. The
 -- completion procedure validates all three IDs before inserting instead.
@@ -69,7 +108,11 @@ BEGIN
 END;
 GO
 
-CREATE OR ALTER PROCEDURE dbo.completeBookingFromQr
+IF OBJECT_ID(N'dbo.completeBookingFromQr', N'P') IS NULL
+    EXEC(N'CREATE PROCEDURE dbo.completeBookingFromQr AS BEGIN SET NOCOUNT ON; END');
+GO
+
+ALTER PROCEDURE dbo.completeBookingFromQr
     @SeatBookingDetailsID UNIQUEIDENTIFIER,
     @TimeAllocationID UNIQUEIDENTIFIER,
     @SalonOwnerID UNIQUEIDENTIFIER,
@@ -79,6 +122,9 @@ BEGIN
     SET NOCOUNT ON;
     SET XACT_ABORT ON;
 
+    BEGIN TRY
+    BEGIN TRANSACTION;
+
     IF NOT EXISTS
     (
         SELECT 1
@@ -86,6 +132,7 @@ BEGIN
         WHERE SalonOwnerID = @SalonOwnerID
           AND SalonMasterID = @SalonMasterID
           AND IsActive = 1
+          AND EXISTS (SELECT 1 FROM dbo.SalonMaster WHERE SalonMasterID = @SalonMasterID AND IsActive = 1)
     )
     BEGIN
         THROW 50013, 'This admin account is not authorized for the selected salon.', 1;
@@ -101,7 +148,8 @@ BEGIN
         @CustomerName = COALESCE(
             NULLIF(LTRIM(RTRIM(CONCAT(CR.FirstName, N' ', CR.LastName))), N''),
             N'Guest customer')
-    FROM dbo.SeatBookingDetails SB
+    -- Serialize completions for the entire booking, including different QR slots.
+    FROM dbo.SeatBookingDetails SB WITH (UPDLOCK, HOLDLOCK)
     INNER JOIN dbo.CustomerTimeSelection CTS
         ON CTS.SeatBookingDetailsID = SB.SeatBookingDetailsID
        AND CTS.TimeAllocationID = @TimeAllocationID
@@ -111,15 +159,7 @@ BEGIN
         ON CR.CustomerID = SB.CustomerID
     WHERE SB.SeatBookingDetailsID = @SeatBookingDetailsID
       AND SB.BookingStatusMasterID = 2
-      AND
-      (
-          SB.SalonMasterID = @SalonMasterID
-          OR
-          (
-              SB.SalonMasterID IS NULL
-              AND (SELECT COUNT(*) FROM dbo.SalonMaster WHERE IsActive = 1) = 1
-          )
-      );
+      AND SB.SalonMasterID = @SalonMasterID;
 
     IF @BookingDate IS NULL OR @BookingTime IS NULL
     BEGIN
@@ -131,12 +171,11 @@ BEGIN
         DATEDIFF(SECOND, CAST('00:00:00' AS TIME), @BookingTime),
         CAST(@BookingDate AS DATETIME2(0)));
 
-    IF @AppointmentStart > GETDATE()
+    -- Booking dates and slot times are in India time, regardless of server zone.
+    IF @AppointmentStart > DATEADD(MINUTE, 330, SYSUTCDATETIME())
     BEGIN
         THROW 50011, 'This appointment is still Upcoming. It can be completed at or after the booked time.', 1;
     END;
-
-    BEGIN TRANSACTION;
 
     DECLARE @WasAlreadyCompleted BIT = 0;
     DECLARE @CompletedUtc DATETIME2(0);
@@ -170,6 +209,28 @@ BEGIN
         SET @WasAlreadyCompleted = 1;
     END;
 
+    DECLARE @BookingStatus NVARCHAR(16) = N'Pending';
+    IF NOT EXISTS
+    (
+        SELECT 1 FROM dbo.CustomerTimeSelection CTS
+        WHERE CTS.SeatBookingDetailsID = @SeatBookingDetailsID
+          AND NOT EXISTS
+          (
+              SELECT 1 FROM dbo.BookingQrCompletion Q
+              WHERE Q.SeatBookingDetailsID = CTS.SeatBookingDetailsID
+                AND Q.TimeAllocationID = CTS.TimeAllocationID
+          )
+    )
+        SET @BookingStatus = N'Completed';
+
+    UPDATE dbo.SeatBookingDetails
+    SET CompletionStatus = @BookingStatus,
+        CompletedUtc = CASE WHEN @BookingStatus = N'Completed' THEN
+            (SELECT MAX(CompletedUtc) FROM dbo.BookingQrCompletion WHERE SeatBookingDetailsID = @SeatBookingDetailsID)
+            ELSE NULL END
+    WHERE SeatBookingDetailsID = @SeatBookingDetailsID
+      AND SalonMasterID = @SalonMasterID;
+
     COMMIT TRANSACTION;
 
     SELECT
@@ -179,11 +240,21 @@ BEGIN
         BookingDate = @BookingDate,
         BookingTime = @BookingTime,
         CompletedUtc = @CompletedUtc,
-        WasAlreadyCompleted = @WasAlreadyCompleted;
+        WasAlreadyCompleted = @WasAlreadyCompleted,
+        BookingStatus = @BookingStatus;
+    END TRY
+    BEGIN CATCH
+        IF XACT_STATE() <> 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH;
 END;
 GO
 
-CREATE OR ALTER PROCEDURE dbo.getCustomerBookingInformation
+IF OBJECT_ID(N'dbo.getCustomerBookingInformation', N'P') IS NULL
+    EXEC(N'CREATE PROCEDURE dbo.getCustomerBookingInformation AS BEGIN SET NOCOUNT ON; END');
+GO
+
+ALTER PROCEDURE dbo.getCustomerBookingInformation
     @CustomerID UNIQUEIDENTIFIER
 AS
 BEGIN

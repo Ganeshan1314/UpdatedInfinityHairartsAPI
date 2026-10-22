@@ -163,7 +163,12 @@ namespace InfinityHairartsAPI.Services
                         }
                         else
                         {
-                            updateCustomerNameLocation(GeneralAddress, CustomerID);
+                            // Automatic session restoration sends only the remembered mobile
+                            // number. An omitted address must preserve the saved profile.
+                            if (modal?.Address != null)
+                            {
+                                updateCustomerNameLocation(GeneralAddress, CustomerID);
+                            }
                             Message = "Success";
                             _httpContextAccessor.HttpContext?.Session.SetString("CustomerID", CustomerID.ToString());
                             //HttpContext.Current.Session["CustomerID"] = CustomerID;
@@ -262,6 +267,10 @@ namespace InfinityHairartsAPI.Services
 
         public string updateCustomerRegistration(UpdateCustomerProfileRequest modal)
         {
+            if (!CustomerEmailAddress.IsValid(modal?.EmailAddress))
+            {
+                return "Enter a valid Gmail address ending in @gmail.com.";
+            }
             string Message = string.Empty;
             try
             {

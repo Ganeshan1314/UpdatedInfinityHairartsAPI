@@ -24,6 +24,8 @@
     <!-- Keep the server's existing connection settings and Firebase credentials when publishing. -->
     <Content Update="appsettings*.json;infinity-hair-arts-firebase-adminsdk-*.json" CopyToPublishDirectory="Never" />
     <Content Update="**/*.sql" CopyToPublishDirectory="Never" />
+    <Content Remove="App_Data/**" />
+    <None Remove="App_Data/**" />
   </ItemGroup>
 
 </Project>

@@ -16,14 +16,17 @@ public sealed class SalonOwnerDashboardService
     }
 
     public async Task<SalonOwnerDashboardResponse> GetDashboardAsync(
+        Guid salonOwnerId,
         Guid salonMasterId,
+        DateTime? date,
         CancellationToken cancellationToken)
     {
+        var selectedDate = date?.Date ?? CustomerBookingRules.Today;
         await using var connection = new SqlConnection(_connectionString);
         using var results = await connection.QueryMultipleAsync(
             new CommandDefinition(
                 "dbo.getSalonOwnerDashboard",
-                new { SalonMasterID = salonMasterId },
+                new { OwnerID = salonOwnerId, SalonID = salonMasterId, Date = selectedDate },
                 commandType: CommandType.StoredProcedure,
                 cancellationToken: cancellationToken));
 
@@ -32,7 +35,10 @@ public sealed class SalonOwnerDashboardService
             Summary = await results.ReadSingleAsync<SalonOwnerDashboardSummary>(),
             UpcomingAppointments = (await results.ReadAsync<SalonOwnerDashboardAppointment>()).AsList(),
             WeeklyBookings = (await results.ReadAsync<SalonOwnerDashboardDay>()).AsList(),
-            PopularServices = (await results.ReadAsync<SalonOwnerDashboardServiceItem>()).AsList()
+            PopularServices = (await results.ReadAsync<SalonOwnerDashboardServiceItem>()).AsList(),
+            Salon = await results.ReadSingleAsync<SalonOwnerDashboardProfile>(),
+            Services = (await results.ReadAsync<SalonOwnerDashboardCatalogueService>()).AsList(),
+            Date = DateOnly.FromDateTime(selectedDate)
         };
     }
 }

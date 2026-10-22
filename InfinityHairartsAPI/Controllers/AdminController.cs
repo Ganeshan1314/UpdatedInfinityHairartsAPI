@@ -11,22 +11,25 @@ namespace InfinityHairartsAPI.Controllers
     {
         private readonly AdminService _adminservice;
         private readonly IWebHostEnvironment _env;
-        private readonly SalonOwnerAuthenticationService _salonOwnerAuthenticationService;
+        private readonly ISalonOwnerAuthenticationService _salonOwnerAuthenticationService;
         private readonly SalonOwnerDashboardService _salonOwnerDashboardService;
         private readonly BookingQrService _bookingQrService;
+        private readonly SalonOwnerPersistentSignIn _persistentSignIn;
         public AdminController(
             IHttpContextAccessor httpContextAccessor,
             IConfiguration configuration,
             IWebHostEnvironment env,
-            SalonOwnerAuthenticationService salonOwnerAuthenticationService,
+            ISalonOwnerAuthenticationService salonOwnerAuthenticationService,
             SalonOwnerDashboardService salonOwnerDashboardService,
-            BookingQrService bookingQrService)
+            BookingQrService bookingQrService,
+            SalonOwnerPersistentSignIn persistentSignIn)
         {
             _adminservice = new AdminService(httpContextAccessor, configuration, env);
             _env = env;
             _salonOwnerAuthenticationService = salonOwnerAuthenticationService;
             _salonOwnerDashboardService = salonOwnerDashboardService;
             _bookingQrService = bookingQrService;
+            _persistentSignIn = persistentSignIn;
         }
 
         [HttpPost("complete-booking-qr")]
@@ -80,7 +83,7 @@ namespace InfinityHairartsAPI.Controllers
                 return Unauthorized(new { message = "Invalid username or password." });
             }
 
-            SetSalonOwnerSession(owner);
+            await _persistentSignIn.SignInAsync(HttpContext, owner);
             return Ok(owner);
         }
 
@@ -94,34 +97,36 @@ namespace InfinityHairartsAPI.Controllers
                 return Unauthorized(new { message = "The salon-owner session has expired." });
             }
 
-            var owner = await _salonOwnerAuthenticationService.GetActiveSessionOwnerAsync(
-                salonOwnerId,
-                cancellationToken);
+            var owner = SalonOwnerPersistentSignIn.RestoredOwner(HttpContext)
+                ?? await _salonOwnerAuthenticationService.GetActiveSessionOwnerAsync(salonOwnerId, cancellationToken);
 
             if (owner is null)
             {
-                HttpContext.Session.Clear();
+                await _persistentSignIn.SignOutAsync(HttpContext);
                 return Unauthorized(new { message = "The salon-owner session has expired." });
             }
 
-            SetSalonOwnerSession(owner);
+            // Upgrade a still-valid legacy session on the next session check.
+            if (SalonOwnerPersistentSignIn.RestoredOwner(HttpContext) is null)
+                await _persistentSignIn.SignInAsync(HttpContext, owner);
             return Ok(owner);
         }
 
         [HttpPost("logout")]
-        public IActionResult Logout()
+        public async Task<IActionResult> Logout()
         {
-            HttpContext.Session.Clear();
+            await _persistentSignIn.SignOutAsync(HttpContext);
             return NoContent();
         }
 
         [HttpGet("dashboard")]
         public async Task<ActionResult<SalonOwnerDashboardResponse>> GetDashboard(
+            [FromQuery] DateTime? date,
             CancellationToken cancellationToken)
         {
             var salonOwnerIdValue = HttpContext.Session.GetString("SalonOwnerID");
             var salonMasterIdValue = HttpContext.Session.GetString("SalonMasterID");
-            if (!Guid.TryParse(salonOwnerIdValue, out _) ||
+            if (!Guid.TryParse(salonOwnerIdValue, out var salonOwnerId) ||
                 !Guid.TryParse(salonMasterIdValue, out var salonMasterId))
             {
                 return Unauthorized(new { message = "The salon-owner session has expired." });
@@ -130,12 +135,18 @@ namespace InfinityHairartsAPI.Controllers
             try
             {
                 return Ok(await _salonOwnerDashboardService.GetDashboardAsync(
+                    salonOwnerId,
                     salonMasterId,
+                    date,
                     cancellationToken));
             }
             catch (SqlException exception) when (exception.Number is 50002 or 50003)
             {
                 return Conflict(new { message = exception.Message });
+            }
+            catch (SqlException exception) when (exception.Number == 50013)
+            {
+                return StatusCode(StatusCodes.Status403Forbidden, new { message = exception.Message });
             }
         }
 
@@ -164,14 +175,6 @@ namespace InfinityHairartsAPI.Controllers
             {
                 return BadRequest(new { message = exception.Message });
             }
-        }
-
-        private void SetSalonOwnerSession(SalonOwnerLoginResponse owner)
-        {
-            HttpContext.Session.SetString("SalonOwnerID", owner.SalonOwnerID.ToString());
-            HttpContext.Session.SetString("SalonMasterID", owner.SalonMasterID.ToString());
-            HttpContext.Session.SetString("SalonOwnerName", owner.OwnerName);
-            HttpContext.Session.SetString("SalonName", owner.SalonName);
         }
 
         [HttpPost("InsertNewHairCutTpyes")]

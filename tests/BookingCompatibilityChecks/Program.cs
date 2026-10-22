@@ -102,6 +102,10 @@ try
     var login = await Post("/api/Login/customerLoginButtomClick", new { MobileNo = mobile, Address = "Local fixture" });
     Check(login.Status == HttpStatusCode.OK && login.Body.GetProperty("item1").GetString() == "Success", "Phone-number-only login succeeds against SQL without OTP");
     Check((await Get("/api/Login/session")).Status == HttpStatusCode.OK, "Login creates a restorable authenticated customer session");
+    Check((await Post("/api/Login/customerLoginButtomClick", new { MobileNo = mobile })).Status == HttpStatusCode.OK,
+        "Remembered-number sign-in restores the session without asking for an address");
+    Check(db.ExecuteScalar<string>("SELECT GeneralAddress FROM dbo.CustomerRegistration WHERE CustomerID=@customer", new { customer }) == "Local fixture",
+        "Automatic sign-in preserves the saved customer address");
     var empty = await Get("/api/Appoinment/time-selection");
     Check(empty.Status == HttpStatusCode.OK && empty.Body.GetProperty("draft").ValueKind == JsonValueKind.Null, "No saved booking is represented by an explicit null draft");
     Check((await Post("/api/Appoinment/insertupdateSeatBookingDetails", new { SeatCount = 1, BookingDate = date.ToString("yyyy-MM-dd") })).Status == HttpStatusCode.BadRequest, "Preparing a booking requires a salon");
@@ -110,6 +114,9 @@ try
     var store = new CustomerReservationStore(config);
     var draft = store.GetDraft(customer)!;
     Check(draft != null && draft.SalonMasterID == salon && draft.Selections.Count == 0, "Booking draft records the selected salon and version");
+    Check(prepare.Body.GetProperty("draft").GetProperty("seatBookingDetailsID").GetGuid() == draft!.SeatBookingDetailsID
+        && prepare.Body.GetProperty("draft").GetProperty("version").GetInt64() == draft.Version,
+        "Preparation returns the authoritative draft so the first tap skips an availability round trip");
     var availability = await Post("/api/Appoinment/getSeatTimeAllocation?bookingDate=" + date.ToString("yyyy-MM-dd"), new { });
     Check(availability.Status == HttpStatusCode.OK && availability.Body.GetProperty("item1").GetString() == "Success"
         && availability.Body.GetProperty("draft").GetProperty("seatBookingDetailsID").GetGuid() == draft!.SeatBookingDetailsID,
@@ -119,6 +126,28 @@ try
     Check((await Post("/api/Appoinment/getSeatTimeAllocation?bookingDate=" + date.AddDays(-20).ToString("yyyy-MM-dd"), new { })).Status == HttpStatusCode.BadRequest,
         "Expired booking dates are rejected");
 
+    if (CustomerBookingRules.IsAvailableDate(CustomerBookingRules.Today, CustomerBookingRules.Today))
+    {
+        db.Execute("UPDATE dbo.SeatBookingDetails SET BookingDate=@today WHERE SeatBookingDetailsID=@id; UPDATE dbo.TimeAllocation SET FullTiming='00:00:00' WHERE TimeAllocationID=@slot;",
+            new { today = CustomerBookingRules.Today, id = draft!.SeatBookingDetailsID, slot });
+        var cutoffDraft = store.GetDraft(customer)!;
+        var expired = new insertCustomerTimeSelection { TimeAllocationID = slot, SeatBookingDetailsID = cutoffDraft.SeatBookingDetailsID,
+            ExpectedVersion = cutoffDraft.Version, BookingDate = cutoffDraft.BookingDate, SalonMasterID = cutoffDraft.SalonMasterID };
+        var cutoff = await Post("/api/Appoinment/insertCustomerTimeSelection", expired);
+        Check(cutoff.Body.GetProperty("item1").GetString() == "Invalid Time"
+            && store.GetDraft(customer)!.Selections.Count == 0, "Saving rechecks the time cutoff without relying on a preceding availability read");
+        var tooSoon = CustomerBookingRules.Now.TimeOfDay.Add(TimeSpan.FromMinutes(30));
+        if (tooSoon < TimeSpan.FromDays(1))
+        {
+            db.Execute("UPDATE dbo.TimeAllocation SET FullTiming=@tooSoon WHERE TimeAllocationID=@slot;", new { tooSoon, slot });
+            expired.ExpectedVersion = store.GetDraft(customer)!.Version;
+            Check((await Post("/api/Appoinment/insertCustomerTimeSelection", expired)).Body.GetProperty("item1").GetString() == "Invalid Time",
+                "Saving preserves the 90-minute advance-booking cutoff even when displayed availability has aged");
+        }
+        db.Execute("UPDATE dbo.SeatBookingDetails SET BookingDate=@date WHERE SeatBookingDetailsID=@id; UPDATE dbo.TimeAllocation SET FullTiming='19:00:00' WHERE TimeAllocationID=@slot;",
+            new { date, id = draft.SeatBookingDetailsID, slot });
+        draft = store.GetDraft(customer)!;
+    }
     var change = new insertCustomerTimeSelection { TimeAllocationID = slot, SeatBookingDetailsID = draft!.SeatBookingDetailsID,
         ExpectedVersion = draft.Version, BookingDate = draft.BookingDate, SalonMasterID = salon };
     var selected = await Post("/api/Appoinment/insertCustomerTimeSelection", change);

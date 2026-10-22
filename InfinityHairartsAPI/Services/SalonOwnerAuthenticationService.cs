@@ -3,10 +3,12 @@ using InfinityHairartsAPI.Modals;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Data.SqlClient;
 using System.Data;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace InfinityHairartsAPI.Services;
 
-public sealed class SalonOwnerAuthenticationService
+public sealed class SalonOwnerAuthenticationService : ISalonOwnerAuthenticationService
 {
     private readonly string _connectionString;
     private readonly PasswordHasher<SalonOwnerCredentialRecord> _passwordHasher = new();
@@ -114,6 +116,7 @@ public sealed class SalonOwnerAuthenticationService
     {
         return new SalonOwnerLoginResponse
         {
+            AuthenticationStamp = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(credential.PasswordHash))),
             SalonOwnerID = credential.SalonOwnerID,
             SalonMasterID = credential.SalonMasterID,
             OwnerName = credential.OwnerName,

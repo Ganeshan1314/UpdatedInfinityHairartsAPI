@@ -137,10 +137,13 @@ public sealed class CustomerReservationStore(IConfiguration configuration)
 				}, tx);
 				if (!remove)
 				{
-					if (db.ExecuteScalar<int>("SELECT COUNT(*) FROM dbo.TimeAllocation WHERE TimeAllocationID=@id AND ISNULL(IsDeleted,0)=0 AND BookingAvailableStatus=1", new
+					var slotTime = db.ExecuteScalar<object>("SELECT FullTiming FROM dbo.TimeAllocation WHERE TimeAllocationID=@id AND ISNULL(IsDeleted,0)=0 AND BookingAvailableStatus=1", new
 					{
 						id = request.TimeAllocationID
-					}, tx) != 1)
+					}, tx);
+					var now = CustomerBookingRules.Now;
+					if (!CustomerBookingRules.TryReadSlotTime(slotTime, out var startsAt)
+						|| (date.Date == now.Date && startsAt < now.TimeOfDay.Add(TimeSpan.FromMinutes(90))))
 					{
 						return Finish("Invalid Time");
 					}

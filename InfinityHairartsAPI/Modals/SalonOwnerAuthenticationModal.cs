@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using System.Text.Json.Serialization;
 
 namespace InfinityHairartsAPI.Modals;
 
@@ -29,6 +30,10 @@ public sealed class InitializeSalonOwnerRequest : SalonOwnerLoginRequest
 
 public sealed class SalonOwnerLoginResponse
 {
+    // Used only inside the protected authentication ticket, never returned to clients.
+    [JsonIgnore]
+    public string AuthenticationStamp { get; set; } = string.Empty;
+
     public Guid SalonOwnerID { get; set; }
     public Guid SalonMasterID { get; set; }
     public string OwnerName { get; set; } = string.Empty;

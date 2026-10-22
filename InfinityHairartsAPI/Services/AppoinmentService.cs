@@ -920,13 +920,10 @@ namespace InfinityHairartsAPI.Services
                     for (int i = 0; i < DT.Rows.Count; i++)
                     {
                         TimeSpan FullTiming;
-                        if (DateTime.TryParseExact(DT.Rows[i]["FullTiming"].ToString(), "hh:mm tt", null, System.Globalization.DateTimeStyles.None, out DateTime dateTimeValue))
+                        if (!CustomerBookingRules.TryReadSlotTime(DT.Rows[i]["FullTiming"], out FullTiming))
                         {
-                            FullTiming = dateTimeValue.TimeOfDay;
-                        }
-                        else
-                        {
-                            FullTiming = TimeSpan.Zero;
+                            DT.Rows[i]["EnableDisable"] = "Disable";
+                            continue;
                         }
                         if (currentTime > FullTiming && TodayBooking == "Not Completed")
                         {
@@ -961,7 +958,8 @@ namespace InfinityHairartsAPI.Services
                         for (int i = 0; i < DT.Rows.Count; i++)
                         {
                             BookingAvailableStatus = Convert.ToBoolean(DT.Rows[i]["BookingAvailableStatus"]);
-                            DT.Rows[i]["EnableDisable"] = BookingAvailableStatus ? "Enable" : "Disable";
+                            DT.Rows[i]["EnableDisable"] = BookingAvailableStatus
+                                && CustomerBookingRules.TryReadSlotTime(DT.Rows[i]["FullTiming"], out _) ? "Enable" : "Disable";
                         }
                     }
 

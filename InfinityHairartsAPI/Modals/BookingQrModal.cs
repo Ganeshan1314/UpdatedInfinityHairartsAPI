@@ -14,4 +14,5 @@ public sealed class CompleteBookingQrResponse
     public TimeSpan BookingTime { get; set; }
     public DateTime CompletedUtc { get; set; }
     public bool WasAlreadyCompleted { get; set; }
+    public string BookingStatus { get; set; } = string.Empty;
 }
