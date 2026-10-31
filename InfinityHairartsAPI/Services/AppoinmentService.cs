@@ -980,103 +980,46 @@ namespace InfinityHairartsAPI.Services
                         SeatBookingDetailsID = new Guid(DTSeatBookingDetails.Rows[0]["SeatBookingDetailsID"].ToString());
                     }
                 }
-                // Do not show a slot already selected for this booking date by any customer.
+                // Fetch occupied IDs for this day only. Include the customer's
+                // confirmed bookings so clients do not need full booking history.
+                // Match the reservation conflict rules, including billed bookings
+                // and the ten-minute hold, while preserving the editable draft.
                 using (con = DBConnection())
                 {
-                    var Parameter = new DynamicParameters();
-                    Parameter.Add("BookingDate", Convert.ToDateTime(BookingDate).Date);
-                      Parameter.Add("CurrentSeatBookingDetailsID", SeatBookingDetailsID);
-                    var Reader = con.ExecuteReader(
-                        "getBookedTimeAllocationsByDate",
-                        Parameter,
-                        commandType: CommandType.StoredProcedure,
-                        commandTimeout: 0);
-                    var bookedByOtherCustomer = new DataTable();
-                    bookedByOtherCustomer.Load(Reader);
-
-                    var bookedIds = new HashSet<string>(
-                        bookedByOtherCustomer.AsEnumerable()
-                            .Select(row => row["TimeAllocationID"].ToString()),
-                        StringComparer.OrdinalIgnoreCase);
-
-                    foreach (DataRow timeAllocation in DT.Rows)
+                    var occupied = con.ExecuteReader("""
+                        SELECT DISTINCT CT.TimeAllocationID
+                        FROM dbo.CustomerTimeSelection CT
+                        INNER JOIN dbo.SeatBookingDetails SB
+                            ON SB.SeatBookingDetailsID = CT.SeatBookingDetailsID
+                        WHERE SB.BookingDate >= @BookingDate
+                          AND SB.BookingDate < DATEADD(DAY, 1, @BookingDate)
+                          AND (SB.BookingStatusMasterID = 2 OR EXISTS
+                            (SELECT 1 FROM dbo.HairCut_Item_Bill_Master B
+                             WHERE B.SeatBookingDetailsID = SB.SeatBookingDetailsID
+                               AND ISNULL(B.IsDeleted, 0) = 0)
+                            OR (CT.CreatedOn >= DATEADD(MINUTE, -10, GETDATE())
+                                AND SB.SeatBookingDetailsID <> @CurrentSeatBookingDetailsID));
+                        """, new
                     {
-                        if (bookedIds.Contains(timeAllocation["TimeAllocationID"].ToString()))
-                        {
-                            timeAllocation["EnableDisable"] = "Disable";
-                            timeAllocation["BookedByOtherCustomer"] = true;
-                        }
-                    }
+                        BookingDate = Convert.ToDateTime(BookingDate).Date,
+                        CurrentSeatBookingDetailsID = SeatBookingDetailsID
+                    }, commandTimeout: 10);
+                    DTSelectedTimeAllocation.Load(occupied);
                 }
-
-                DateTime CreatedOn = DateTime.Today;
-                using (con = DBConnection())
+                var bookedIds = new HashSet<string>(
+                    DTSelectedTimeAllocation.AsEnumerable()
+                        .Select(row => row["TimeAllocationID"].ToString() ?? string.Empty),
+                    StringComparer.OrdinalIgnoreCase);
+                foreach (DataRow timeAllocation in DT.Rows)
                 {
-                    var Parameter = new DynamicParameters();
-                    var Reader = con.ExecuteReader("getSelectedTimeAllocation", Parameter, commandType: CommandType.StoredProcedure, commandTimeout: 0);
-                    DTSelectedTimeAllocation = new DataTable();
-                    DTSelectedTimeAllocation.Load(Reader);
-
-                    if (DTSelectedTimeAllocation.Columns.Contains("CreatedOn"))
+                    if (bookedIds.Contains(timeAllocation["TimeAllocationID"].ToString() ?? string.Empty))
                     {
-                        for (int i = DTSelectedTimeAllocation.Rows.Count - 1; i >= 0; i--)
-                        {
-                            if (DateTime.TryParse(DTSelectedTimeAllocation.Rows[i]["CreatedOn"]?.ToString(), out var createdOn) &&
-                                createdOn < DateTime.Now.AddMinutes(-10))
-                            {
-                                DTSelectedTimeAllocation.Rows.RemoveAt(i);
-                            }
-                        }
+                        timeAllocation["EnableDisable"] = "Disable";
+                        timeAllocation["BookedByOtherCustomer"] = true;
                     }
                 }
-                if (DTSelectedTimeAllocation.Rows.Count == 0)
-                {
-                    SeatBookingDetailsCount = 0;
-                }
-                else
-                {
-                    for (int i = DTSelectedTimeAllocation.Rows.Count - 1; i >= 0; i--)
-                    {
-                        if (DTSelectedTimeAllocation.Columns.Contains("SeatBookingDetailsID") &&
-                            Guid.TryParse(DTSelectedTimeAllocation.Rows[i]["SeatBookingDetailsID"]?.ToString(), out var selectedBookingId) &&
-                            selectedBookingId == SeatBookingDetailsID)
-                        {
-                            DTSelectedTimeAllocation.Rows[i].Delete();
-                        }
-                        else if (DTSelectedTimeAllocation.Columns.Contains("BookingDate") &&
-                                 Convert.ToDateTime(DTSelectedTimeAllocation.Rows[i]["BookingDate"]).Date != Convert.ToDateTime(BookingDate).Date)
-                        {
-                            DTSelectedTimeAllocation.Rows[i].Delete();
-                        }
-                    }
-
-                    DTSelectedTimeAllocation.AcceptChanges();
-
-                    if (DTSelectedTimeAllocation.Rows.Count == 0)
-                    {
-                        SeatBookingDetailsCount = 0;
-                    }
-
-                    for (int i = DTSelectedTimeAllocation.Rows.Count - 1; i >= 0; i--)
-                    {
-                        if (TodayBooking == "Completed")
-                        {
-                            DataRow dr = DTSelectedTimeAllocation.Rows[i];
-                            dateArray[0] = tomorrow;
-                            if (Convert.ToDateTime(dr["BookingDate"]).Date != Convert.ToDateTime(BookingDate).Date)
-                            {
-                                dr.Delete();
-                            }
-                        }
-                    }
-
-                    // This list excludes the current booking. Its count must not
-                    // consume the new booking's seat allowance or disable free slots.
-                    // Return these occupied IDs separately; retain the availability
-                    // flags already calculated above for every other time slot.
-                    listSelectedTimeAllocation = convertDatatabletoList(DTSelectedTimeAllocation);
-
-                }
+                if (bookedIds.Count == 0) SeatBookingDetailsCount = 0;
+                listSelectedTimeAllocation = convertDatatabletoList(DTSelectedTimeAllocation);
                 list = convertDatatabletoList(DT);
                 Message = "Success";
             }

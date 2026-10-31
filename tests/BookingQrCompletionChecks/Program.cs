@@ -46,7 +46,8 @@ try
         CREATE TABLE dbo.SalonOwner(SalonOwnerID uniqueidentifier PRIMARY KEY, SalonMasterID uniqueidentifier, IsActive bit NOT NULL, EmailAddress nvarchar(254));
         CREATE TABLE dbo.SalonService(SalonServiceID uniqueidentifier DEFAULT NEWID(), SalonMasterID uniqueidentifier,
             ServiceName nvarchar(150), Category nvarchar(80) DEFAULT 'Hair', Price decimal(18,2) DEFAULT 100,
-            DurationMinutes int DEFAULT 30, Description nvarchar(500), ImagePath nvarchar(500), IsActive bit NOT NULL);
+            DurationMinutes int DEFAULT 30, Description nvarchar(500), ImagePath nvarchar(500), IsActive bit NOT NULL,
+            CreatedUtc datetime2(0) NOT NULL DEFAULT SYSUTCDATETIME());
         CREATE TABLE dbo.BookingStatusMaster(BookingStatusMasterID int PRIMARY KEY, BookingStatus nvarchar(50));
         INSERT dbo.BookingStatusMaster VALUES(1,'Selected'),(2,'Booked'),(3,'PaymentProcessing');
         CREATE TABLE dbo.CustomerRegistration(CustomerID uniqueidentifier PRIMARY KEY, FirstName nvarchar(150),LastName nvarchar(150), MobileNo nvarchar(20), GeneralAddress nvarchar(500),IsDeleted bit);
@@ -67,6 +68,16 @@ try
     async Task DeployCounts()
     {
         var sql = await File.ReadAllTextAsync(Path.Combine(Path.GetDirectoryName(configurationPath)!, "SQL_Update_BookingCounts_2026-10-22.sql"));
+        sql = sql.Replace("IF DB_NAME() <> N'InfinityHairArtsAdmin'", $"IF DB_NAME() <> N'{database}'");
+        await db.ExecuteAsync(sql);
+        await DeployRange();
+    }
+    async Task DeployRange()
+    {
+        var sql = await File.ReadAllTextAsync(Path.Combine(Path.GetDirectoryName(configurationPath)!, "SQL_Update_DashboardDateRange_2026-10-27.sql"));
+        sql = sql.Replace("IF DB_NAME() <> N'InfinityHairArtsAdmin'", $"IF DB_NAME() <> N'{database}'");
+        await db.ExecuteAsync(sql);
+        sql = await File.ReadAllTextAsync(Path.Combine(Path.GetDirectoryName(configurationPath)!, "SQL_Update_DashboardAllCounts_2026-10-28.sql"));
         sql = sql.Replace("IF DB_NAME() <> N'InfinityHairArtsAdmin'", $"IF DB_NAME() <> N'{database}'");
         await db.ExecuteAsync(sql);
     }
@@ -93,6 +104,14 @@ try
         INSERT dbo.CustomerRegistration VALUES(@secondCustomer,'Second','Fixture','9999999998','',0),(@foreignCustomer,'Other','Fixture','9999999997','',0);
         INSERT dbo.TimeAllocation VALUES(@slot,'00:00:00'),(@secondSlot,'00:01:00');
         """, new { salon, otherSalon, owner, otherOwner, customer, secondCustomer, foreignCustomer, location, slot, secondSlot });
+    await db.ExecuteAsync("""
+        UPDATE dbo.SalonService SET CreatedUtc = DATEADD(minute,-330,CAST(@today AS datetime2));
+        UPDATE dbo.SalonService SET CreatedUtc = DATEADD(second,-1,DATEADD(minute,-330,DATEADD(day,1,CAST(@today AS datetime2))))
+            WHERE SalonMasterID=@salon AND ServiceName='Styling';
+        INSERT dbo.SalonService(SalonMasterID,ServiceName,IsActive,CreatedUtc) VALUES
+            (@salon,'Earlier service',1,DATEADD(second,-1,DATEADD(minute,-330,CAST(@today AS datetime2)))),
+            (@salon,'Future service',1,DATEADD(minute,-330,DATEADD(day,1,CAST(@today AS datetime2))));
+        """, new { salon, today });
     async Task<Guid> Booking(DateTime date, bool multiple = false, Guid? salonId = null, int status = 2)
     {
         var id = Guid.NewGuid();
@@ -120,6 +139,14 @@ try
             (NEWID(),@booking,@today,999,1), (NEWID(),@booking,DATEADD(day,-1,@today),300,0),
             (NEWID(),@booking,DATEADD(day,1,@today),400,0), (NEWID(),@foreign,@today,700,0);
         """, new { secondCustomer, foreignCustomer, future, foreign, booking, today });
+
+    var billedService = Guid.NewGuid();
+    await db.ExecuteAsync("""
+        INSERT dbo.HairCut_Item_List VALUES(@billedService,'Fixture haircut',0);
+        INSERT dbo.HairCut_Item_Customer_Bill
+        SELECT UniqueBillID,@billedService,BillIDTotalAmount,1,CreatedDate,IsDeleted
+        FROM dbo.HairCut_Item_Bill_Master;
+        """, new { billedService });
 
     var builder = WebApplication.CreateBuilder(new WebApplicationOptions { Args = [], EnvironmentName = "Development" });
     builder.Logging.ClearProviders();
@@ -169,20 +196,22 @@ try
         && initialSummary.GetProperty("pendingBookings").GetInt32() == 1
         && initialSummary.GetProperty("completedBookings").GetInt32() == 0,
         "Selected-date counts read Pending and Completed from confirmed bookings for this salon only");
-    Check(initialSummary.GetProperty("totalBookings").GetInt32() == 6
-        && initialSummary.GetProperty("totalPendingBookings").GetInt32() == 6
+    Check(initialSummary.GetProperty("totalBookings").GetInt32() == 1
+        && initialSummary.GetProperty("totalPendingBookings").GetInt32() == 1
         && initialSummary.GetProperty("totalCompletedBookings").GetInt32() == 0,
-        "All-date counts include past and future bookings and exclude other salons and unconfirmed selections");
+        "Every booking total uses the selected date, excluding other dates, salons and unconfirmed selections");
     Check(initialSummary.GetProperty("todaySeats").GetInt32() == 1
         && initialSummary.GetProperty("todayRevenue").GetDecimal() == 200m
-        && initialSummary.GetProperty("totalCustomers").GetInt32() == 2
+        && initialSummary.GetProperty("totalCustomers").GetInt32() == 1
         && initialSummary.GetProperty("activeServices").GetInt32() == 2,
-        "All six card values read SQL: reserved seats, date-filtered nondeleted bills, distinct salon customers and active salon services");
+        "All six card values are date filtered, including distinct customers and active services at both India-day boundaries");
     using (var response = await http.GetAsync("/api/Admin/dashboard?date=" + today.ToString("yyyy-MM-dd")))
     {
+        Check(response.Headers.CacheControl?.NoStore == true,
+            "Dashboard counts cannot be cached between database updates");
         var body = await response.Content.ReadFromJsonAsync<JsonElement>();
         Check(body.GetProperty("salon").GetProperty("salonMasterID").GetGuid() == salon
-            && body.GetProperty("services").GetArrayLength() == 3
+            && body.GetProperty("services").GetArrayLength() == 5
             && body.GetProperty("date").GetString() == today.ToString("yyyy-MM-dd"),
             "Dashboard returns the salon, service collection and date required to render the summary cards");
     }
@@ -192,9 +221,67 @@ try
         && futureSummary.GetProperty("todayRevenue").GetDecimal() == 400m
         && futureSummary.GetProperty("todayBookings").GetInt32() == 1
         && futureSummary.GetProperty("pendingBookings").GetInt32() == 1
-        && futureSummary.GetProperty("totalCustomers").GetInt32() == 2
-        && futureSummary.GetProperty("activeServices").GetInt32() == 2,
-        "Changing date reloads booking and billed-amount cards while customer and active-service counts stay salon-wide");
+        && futureSummary.GetProperty("totalCustomers").GetInt32() == 1
+        && futureSummary.GetProperty("activeServices").GetInt32() == 1,
+        "Changing date reloads customers and services too, including services created exactly at the next India-day boundary");
+    using (var rangeResponse = await http.GetAsync($"/api/Admin/dashboard?fromDate={today.AddDays(-1):yyyy-MM-dd}&toDate={today:yyyy-MM-dd}"))
+    {
+        rangeResponse.EnsureSuccessStatusCode();
+        var range = await rangeResponse.Content.ReadFromJsonAsync<JsonElement>();
+        var summary = range.GetProperty("summary");
+        Check(summary.GetProperty("todayBookings").GetInt32() == 5
+            && summary.GetProperty("pendingBookings").GetInt32() == 5
+            && summary.GetProperty("completedBookings").GetInt32() == 0
+            && summary.GetProperty("todaySeats").GetInt32() == 5
+            && summary.GetProperty("todayRevenue").GetDecimal() == 500m,
+            "Date range includes bookings and nondeleted bills on both boundary dates and excludes the following day and other salons");
+        Check(range.GetProperty("fromDate").GetString() == today.AddDays(-1).ToString("yyyy-MM-dd")
+            && range.GetProperty("toDate").GetString() == today.ToString("yyyy-MM-dd")
+            && range.GetProperty("upcomingAppointments").GetArrayLength() == 5
+            && summary.GetProperty("totalCustomers").GetInt32() == 1
+            && summary.GetProperty("activeServices").GetInt32() == 3
+            && summary.GetProperty("totalBookings").GetInt32() == 5
+            && summary.GetProperty("totalPendingBookings").GetInt32() == 5,
+            "Range response filters customers, services and all booking totals while preserving the complete service catalogue");
+        var days = range.GetProperty("weeklyBookings").EnumerateArray().ToArray();
+        Check(days.Length == 2 && days[0].GetProperty("bookingDate").GetDateTime() == today.AddDays(-1)
+            && days[^1].GetProperty("bookingDate").GetDateTime() == today
+            && days.Sum(day => day.GetProperty("bookingCount").GetInt32()) == 5,
+            "Activity includes exactly the selected dates and agrees with the booking card");
+        var popular = range.GetProperty("popularServices").EnumerateArray().Single();
+        Check(popular.GetProperty("bookingCount").GetInt32() == 3
+            && popular.GetProperty("revenue").GetDecimal() == 500m,
+            "Popular services use the selected range and exclude deleted bills and other salons");
+        var appointmentDates = range.GetProperty("upcomingAppointments").EnumerateArray()
+            .Select(row => row.GetProperty("bookingDate").GetDateTime()).ToArray();
+        Check(appointmentDates.SequenceEqual(appointmentDates.Order()), "Range appointments are sorted by date before appointment time");
+    }
+    using (var singleDay = await http.GetAsync($"/api/Admin/dashboard?fromDate={today:yyyy-MM-dd}&toDate={today:yyyy-MM-dd}"))
+    {
+        var body = await singleDay.Content.ReadFromJsonAsync<JsonElement>();
+        Check(body.GetProperty("summary").GetRawText() == initialSummary.GetRawText(),
+            "Equal From and To dates preserve single-date totals and legacy date requests");
+    }
+    foreach (var query in new[] {
+        $"fromDate={today:yyyy-MM-dd}&toDate={today.AddDays(-1):yyyy-MM-dd}",
+        "fromDate=1999-12-31&toDate=2026-10-27", "fromDate=2026-10-27&toDate=2101-01-01",
+        "fromDate=not-a-date&toDate=2026-10-27" })
+    {
+        using var invalidRange = await http.GetAsync("/api/Admin/dashboard?" + query);
+        Check(invalidRange.StatusCode == HttpStatusCode.BadRequest, "Reversed, out-of-bounds and malformed date ranges return 400");
+    }
+    using (var wide = await http.GetAsync($"/api/Admin/dashboard?fromDate={today.AddDays(-120):yyyy-MM-dd}&toDate={today.AddDays(1):yyyy-MM-dd}"))
+    {
+        wide.EnsureSuccessStatusCode();
+        var data = await wide.Content.ReadFromJsonAsync<JsonElement>();
+        Check(data.GetProperty("weeklyBookings").GetArrayLength() == 122
+            && data.GetProperty("summary").GetProperty("totalCustomers").GetInt32() == 2
+            && data.GetProperty("summary").GetProperty("activeServices").GetInt32() == 4,
+            "Ranges longer than 100 days include every day, distinct customers and active services without recursion errors");
+    }
+    await DeployRange();
+    Check((await Summary(today)).GetProperty("todayBookings").GetInt32() == 1,
+        "Date-range migration can be rerun without changing existing bookings");
     using (var invalid = await http.PostAsJsonAsync("/api/Admin/complete-booking-qr", new { qrReference = "invalid" }))
         Check(invalid.StatusCode == HttpStatusCode.BadRequest, "Malformed QR is rejected");
     foreach (var invalid in new[] { (future, HttpStatusCode.Conflict), (foreign, HttpStatusCode.NotFound),
@@ -257,17 +344,19 @@ try
     }
     var savedSummary = await Summary(today);
     Check(savedSummary.GetProperty("pendingBookings").GetInt32() == 0
-        && savedSummary.GetProperty("totalBookings").GetInt32() == 6
-        && savedSummary.GetProperty("totalPendingBookings").GetInt32() == 2
-        && savedSummary.GetProperty("totalCompletedBookings").GetInt32() == 4,
+        && savedSummary.GetProperty("totalBookings").GetInt32() == 1
+        && savedSummary.GetProperty("totalPendingBookings").GetInt32() == 0
+        && savedSummary.GetProperty("totalCompletedBookings").GetInt32() == 1,
         "QR completion moves bookings from Pending to Completed in database-backed totals without duplicates");
     var emptyDateSummary = await Summary(today.AddDays(-30));
     Check(emptyDateSummary.GetProperty("todayBookings").GetInt32() == 0
         && emptyDateSummary.GetProperty("pendingBookings").GetInt32() == 0
         && emptyDateSummary.GetProperty("completedBookings").GetInt32() == 0
         && emptyDateSummary.GetProperty("todaySeats").GetInt32() == 0
-        && emptyDateSummary.GetProperty("totalBookings").GetInt32() == 6,
-        "Changing to an empty date returns zero daily counts while preserving all-date totals");
+        && emptyDateSummary.GetProperty("totalBookings").GetInt32() == 0
+        && emptyDateSummary.GetProperty("totalCustomers").GetInt32() == 0
+        && emptyDateSummary.GetProperty("activeServices").GetInt32() == 0,
+        "An empty date returns zero for every count, including customers, services and legacy total fields");
     for (var i = 0; i < 35; i++) await Booking(today);
     using (var dashboard = await http.GetAsync("/api/Admin/dashboard?date=" + today.ToString("yyyy-MM-dd")))
     {
@@ -277,16 +366,16 @@ try
             && summary.GetProperty("todayBookings").GetInt32() == 36
             && summary.GetProperty("pendingBookings").GetInt32() == 35
             && summary.GetProperty("completedBookings").GetInt32() == 1
-            && summary.GetProperty("totalBookings").GetInt32() == 41
-            && summary.GetProperty("totalPendingBookings").GetInt32() == 37
-            && summary.GetProperty("totalCompletedBookings").GetInt32() == 4
-            && summary.GetProperty("upcomingBookings").GetInt32() == 36,
+            && summary.GetProperty("totalBookings").GetInt32() == 36
+            && summary.GetProperty("totalPendingBookings").GetInt32() == 35
+            && summary.GetProperty("totalCompletedBookings").GetInt32() == 1
+            && summary.GetProperty("upcomingBookings").GetInt32() == 35,
             "Database counts include every booking even when the appointment preview is limited to 30 rows");
     }
     var dashboards = new SalonOwnerDashboardService(builder.Configuration);
     var otherSummary = (await dashboards.GetDashboardAsync(otherOwner, otherSalon, today, default)).Summary;
     Check(otherSummary.TotalBookings == 1 && otherSummary.TotalPendingBookings == 1 && otherSummary.TotalCompletedBookings == 0,
-        "All-date booking counts stay isolated to the signed-in salon");
+        "Date-filtered booking counts stay isolated to the signed-in salon");
     Check(otherSummary.TodayRevenue == 700m && otherSummary.TotalCustomers == 1 && otherSummary.ActiveServices == 1,
         "Billed amount, customers and active services stay isolated to the signed-in salon");
     var emptySalon = Guid.NewGuid();
@@ -299,7 +388,7 @@ try
     Check(emptySummary.TodayRevenue == 0 && emptySummary.TotalCustomers == 0 && emptySummary.ActiveServices == 0,
         "A salon without bills, customers or services receives real zero totals");
     await DeployCounts();
-    Check((await Summary(today)).GetProperty("totalBookings").GetInt32() == 41,
+    Check((await Summary(today)).GetProperty("totalBookings").GetInt32() == 36,
         "Standalone count migration can be rerun without changing booking data");
     await db.ExecuteAsync("INSERT dbo.BookingQrCompletion VALUES(@legacy,@slot,@owner,DATEADD(MINUTE,-5,SYSUTCDATETIME()))", new { legacy, slot, owner });
     await Deploy();

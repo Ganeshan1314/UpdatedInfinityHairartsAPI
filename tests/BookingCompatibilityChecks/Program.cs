@@ -123,6 +123,33 @@ try
         "Appointment times include the authoritative booking draft required by app 1.2.21");
     Check(availability.Body.GetProperty("item2").EnumerateArray().Any(row => row.GetProperty("TimeAllocationID").GetGuid() == slot
         && row.GetProperty("EnableDisable").GetString() == "Enable"), "Requested future day exposes an available fixture time");
+    Check(availability.Body.GetProperty("occupiedTimesComplete").GetBoolean(),
+        "Availability declares complete occupied times so the app can skip booking history");
+
+    async Task CheckOccupied(bool expected, string description)
+    {
+        var response = await Post("/api/Appoinment/getSeatTimeAllocation?bookingDate=" + date.ToString("yyyy-MM-dd"), new { });
+        var row = response.Body.GetProperty("item2").EnumerateArray().Single(row => row.GetProperty("TimeAllocationID").GetGuid() == slot);
+        Check((row.GetProperty("EnableDisable").GetString() == "Disable") == expected
+            && response.Body.GetProperty("item4").EnumerateArray().Any(row => row.GetProperty("TimeAllocationID").GetGuid() == slot) == expected,
+            description);
+    }
+    db.Execute("""
+        INSERT dbo.SeatBookingDetails(SeatBookingDetailsID,CustomerID,SeatCount,BookingStatusMasterID,BookingDate,CreatedOn,SalonMasterID)
+        VALUES(@otherBooking,@other,1,1,@date,GETDATE(),@salon);
+        INSERT dbo.CustomerTimeSelection(TimeSelectionID,SeatBookingDetailsID,CustomerID,TimeAllocationID,CreatedOn)
+        VALUES(NEWID(),@otherBooking,@other,@slot,GETDATE());
+        """, new { otherBooking, other, date, salon, slot });
+    await CheckOccupied(true, "Complete availability excludes another customer's recent hold");
+    db.Execute("UPDATE dbo.CustomerTimeSelection SET CreatedOn=DATEADD(MINUTE,-11,GETDATE()) WHERE SeatBookingDetailsID=@otherBooking", new { otherBooking });
+    await CheckOccupied(false, "An expired unconfirmed hold leaves the time available");
+    db.Execute("UPDATE dbo.SeatBookingDetails SET BookingStatusMasterID=2 WHERE SeatBookingDetailsID=@otherBooking", new { otherBooking });
+    await CheckOccupied(true, "Confirmed times stay occupied beyond the temporary-hold expiry");
+    db.Execute("UPDATE dbo.SeatBookingDetails SET CustomerID=@customer WHERE SeatBookingDetailsID=@otherBooking", new { customer, otherBooking });
+    await CheckOccupied(true, "The customer's own confirmed time is excluded without a history request");
+    db.Execute("UPDATE dbo.SeatBookingDetails SET BookingDate=DATEADD(DAY,1,@date) WHERE SeatBookingDetailsID=@otherBooking", new { date, otherBooking });
+    await CheckOccupied(false, "A booking on another date does not hide this day's time");
+    db.Execute("DELETE dbo.CustomerTimeSelection WHERE SeatBookingDetailsID=@otherBooking; DELETE dbo.SeatBookingDetails WHERE SeatBookingDetailsID=@otherBooking", new { otherBooking });
     Check((await Post("/api/Appoinment/getSeatTimeAllocation?bookingDate=" + date.AddDays(-20).ToString("yyyy-MM-dd"), new { })).Status == HttpStatusCode.BadRequest,
         "Expired booking dates are rejected");
 
@@ -154,6 +181,7 @@ try
     Check(selected.Status == HttpStatusCode.OK && selected.Body.GetProperty("item1").GetString() == "Success", "A time selection is saved through the app endpoint");
     var selectedDraft = store.GetDraft(customer)!;
     Check(selectedDraft.Selections.Single().Id == slot && selectedDraft.Version > draft.Version, "Saving a time increments the reservation version");
+    await CheckOccupied(false, "The customer's editable draft time remains selectable");
     var replay = await Post("/api/Appoinment/insertCustomerTimeSelection", change);
     Check(replay.Body.GetProperty("item1").GetString() == "Success" && store.GetDraft(customer)!.Version == selectedDraft.Version,
         "Repeating the same save does not duplicate or change the selection");
@@ -184,6 +212,10 @@ try
     Check((await Post("/api/Appoinment/SendOTPCustomer", review)).Body.GetProperty("item1").GetString() == "Success",
         "Legacy-named checkout endpoint confirms the versioned booking without sending OTP");
     Check(store.GetDraft(customer)!.Confirmed, "Confirmed booking is persisted");
+    await CheckOccupied(true, "The newly confirmed booking is included in complete occupied times");
+    db.Execute("UPDATE dbo.SeatBookingDetails SET BookingStatusMasterID=1 WHERE SeatBookingDetailsID=@id", new { id = draft.SeatBookingDetailsID });
+    await CheckOccupied(true, "A billed time remains occupied even if its booking status is pending");
+    db.Execute("UPDATE dbo.SeatBookingDetails SET BookingStatusMasterID=2 WHERE SeatBookingDetailsID=@id", new { id = draft.SeatBookingDetailsID });
     Check(db.ExecuteScalar<int>("SELECT COUNT(*) FROM dbo.HairCut_Item_Customer_Bill_Primary WHERE UniqueBillID=@bill", new { bill }) == 0,
         "Successful checkout clears this project's customer cart");
     Check((await Post("/api/Appoinment/SendOTPCustomer", review)).Body.GetProperty("item1").GetString() == "Success"

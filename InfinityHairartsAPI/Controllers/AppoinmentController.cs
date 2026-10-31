@@ -45,6 +45,7 @@ public class AppoinmentController : ControllerBase
 				Item3 = seatTimeAllocation.Item3,
 				Item4 = seatTimeAllocation.Item4,
 				Item5 = seatTimeAllocation.Item5,
+				OccupiedTimesComplete = true,
 				Draft = _appoinmentService.ReservationStore().GetDraft(_appoinmentService.CustomerID())
 			});
 		}

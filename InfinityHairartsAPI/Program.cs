@@ -64,6 +64,7 @@ builder.Services.AddScoped<LocationService>();
 builder.Services.AddScoped<SalonOwnerAuthenticationService>();
 builder.Services.AddScoped<ISalonOwnerAuthenticationService>(services => services.GetRequiredService<SalonOwnerAuthenticationService>());
 builder.Services.AddSalonOwnerPersistentSignIn(builder.Configuration, builder.Environment);
+SuperAdminAuthentication.Register(builder.Services);
 builder.Services.AddScoped<SalonOwnerDashboardService>();
 builder.Services.AddScoped<BookingQrService>();
 builder.Services.Configure<BookingReminderOptions>(builder.Configuration.GetSection("Notifications"));
@@ -124,6 +125,8 @@ app.UseStaticFiles(new StaticFileOptions
 app.UseRouting();
 
 app.UseCors("AllowIonic");
+app.UseRateLimiter();
+app.UseMiddleware<SuperAdminRequestMiddleware>();
 
 app.UseSession();
 app.UseMiddleware<CustomerApiSessionMiddleware>();

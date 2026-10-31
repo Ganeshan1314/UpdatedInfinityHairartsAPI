@@ -2,6 +2,7 @@
 .vs/
 **/bin/
 **/obj/
+/PublishAPI/
 **/App_Data/DataProtectionKeys/
 
 # Local application secrets and credentials

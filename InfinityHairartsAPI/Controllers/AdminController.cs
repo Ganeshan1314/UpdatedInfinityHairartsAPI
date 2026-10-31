@@ -120,8 +120,11 @@ namespace InfinityHairartsAPI.Controllers
         }
 
         [HttpGet("dashboard")]
+        [ResponseCache(Location = ResponseCacheLocation.None, NoStore = true)]
         public async Task<ActionResult<SalonOwnerDashboardResponse>> GetDashboard(
             [FromQuery] DateTime? date,
+            [FromQuery] DateTime? fromDate,
+            [FromQuery] DateTime? toDate,
             CancellationToken cancellationToken)
         {
             var salonOwnerIdValue = HttpContext.Session.GetString("SalonOwnerID");
@@ -138,7 +141,13 @@ namespace InfinityHairartsAPI.Controllers
                     salonOwnerId,
                     salonMasterId,
                     date,
-                    cancellationToken));
+                    cancellationToken,
+                    fromDate,
+                    toDate));
+            }
+            catch (ArgumentException exception)
+            {
+                return BadRequest(new { message = exception.Message });
             }
             catch (SqlException exception) when (exception.Number is 50002 or 50003)
             {

@@ -9,6 +9,8 @@ public sealed class SalonOwnerDashboardResponse
     public SalonOwnerDashboardProfile Salon { get; set; } = new();
     public IReadOnlyList<SalonOwnerDashboardCatalogueService> Services { get; set; } = [];
     public DateOnly Date { get; set; }
+    public DateOnly FromDate { get; set; }
+    public DateOnly ToDate { get; set; }
 }
 
 public sealed class SalonOwnerDashboardProfile
