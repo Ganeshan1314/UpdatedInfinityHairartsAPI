@@ -209,7 +209,9 @@ BEGIN
         SET @WasAlreadyCompleted = 1;
     END;
 
-    DECLARE @BookingStatus NVARCHAR(16) = N'Pending';
+    -- Preserve an explicitly started visit until all of its appointment QRs are completed.
+    DECLARE @BookingStatus NVARCHAR(16) = (SELECT CASE WHEN CompletionStatus=N'InProgress' THEN N'InProgress' ELSE N'Pending' END
+        FROM dbo.SeatBookingDetails WHERE SeatBookingDetailsID=@SeatBookingDetailsID);
     IF NOT EXISTS
     (
         SELECT 1 FROM dbo.CustomerTimeSelection CTS

@@ -63,6 +63,8 @@ async Task Start()
     {
         context.Session.SetString("SalonOwnerID", owners.Owner.SalonOwnerID.ToString());
         context.Session.SetString("SalonMasterID", owners.Owner.SalonMasterID.ToString());
+        if (context.Request.Query["versioned"] == "1")
+            context.Session.SetString("SalonOwnerAuthenticationStamp", owners.Owner.AuthenticationStamp);
         return Results.NoContent();
     });
     await app.StartAsync();
@@ -204,8 +206,13 @@ try
     using (var response = await Send(HttpMethod.Get, "/api/Admin/session", explicitCookie: ""))
         Check(response.StatusCode == HttpStatusCode.Unauthorized, "The old session-only sign-in is lost when Android removes temporary cookies");
     using (var response = await Send(HttpMethod.Get, "/api/Admin/session"))
-        Check(response.StatusCode == HttpStatusCode.OK, "Existing valid temporary owner sessions can be upgraded");
-    Check(cookies.GetCookies(cookieOrigin)[SalonOwnerPersistentSignIn.CookieName]?.Expires > DateTime.UtcNow.AddDays(6), "Legacy restoration issues the new persistent cookie");
+        Check(response.StatusCode == HttpStatusCode.Unauthorized, "Unversioned temporary sessions must sign in again");
+    cookies = new CookieContainer();
+    using (var response = await Send(HttpMethod.Post, "/test/legacy-session?versioned=1"))
+        Check(response.IsSuccessStatusCode, "The fixture can represent a credential-versioned temporary session");
+    using (var response = await Send(HttpMethod.Get, "/api/Admin/session"))
+        Check(response.StatusCode == HttpStatusCode.OK, "A valid versioned server session restores persistent sign-in");
+    Check(cookies.GetCookies(cookieOrigin)[SalonOwnerPersistentSignIn.CookieName]?.Expires > DateTime.UtcNow.AddDays(6), "Versioned restoration issues a persistent cookie");
 
     Console.WriteLine($"All {checks} owner sign-in checks passed. No live accounts or databases were accessed.");
 }

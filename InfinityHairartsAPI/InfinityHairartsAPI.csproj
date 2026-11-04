@@ -21,6 +21,9 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Existing haircut photos live outside wwwroot and must accompany the API publish. -->
+    <Content Include="Images/HairCutItemListImages/*.jpg;Images/HairCutItemListImages/*.jpeg;Images/HairCutItemListImages/*.png;Images/HairCutItemListImages/*.webp"
+             CopyToPublishDirectory="PreserveNewest" />
     <!-- Keep the server's existing connection settings and Firebase credentials when publishing. -->
     <Content Update="appsettings*.json;infinity-hair-arts-firebase-adminsdk-*.json" CopyToPublishDirectory="Never" />
     <Content Update="**/*.sql" CopyToPublishDirectory="Never" />

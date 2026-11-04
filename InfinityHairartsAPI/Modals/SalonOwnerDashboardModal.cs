@@ -40,10 +40,11 @@ public sealed class SalonOwnerDashboardCatalogueService
     public string ServiceName { get; set; } = string.Empty;
     public string Category { get; set; } = string.Empty;
     public decimal Price { get; set; }
-    public int DurationMinutes { get; set; }
+    public int? DurationMinutes { get; set; }
     public string Description { get; set; } = string.Empty;
     public string ImagePath { get; set; } = string.Empty;
     public bool IsActive { get; set; }
+    public bool CanEdit { get; set; } = true;
 }
 
 public sealed class SalonOwnerDashboardSummary
@@ -51,13 +52,16 @@ public sealed class SalonOwnerDashboardSummary
     public int TodayBookings { get; set; }
     public int TodaySeats { get; set; }
     public decimal TodayRevenue { get; set; }
+    public decimal? CompletedRevenue { get; set; }
     public int TotalCustomers { get; set; }
     public int ActiveServices { get; set; }
     public int UpcomingBookings { get; set; }
     public int CompletedBookings { get; set; }
     public int PendingBookings { get; set; }
+    public int InProgressBookings { get; set; }
     public int TotalBookings { get; set; }
     public int TotalPendingBookings { get; set; }
+    public int TotalInProgressBookings { get; set; }
     public int TotalCompletedBookings { get; set; }
 }
 
@@ -70,6 +74,7 @@ public sealed class SalonOwnerDashboardAppointment
     public TimeSpan? StartTime { get; set; }
     public int SeatCount { get; set; }
     public string BookingStatus { get; set; } = string.Empty;
+    public decimal? BillAmount { get; set; }
 }
 
 public sealed class SalonOwnerDashboardDay

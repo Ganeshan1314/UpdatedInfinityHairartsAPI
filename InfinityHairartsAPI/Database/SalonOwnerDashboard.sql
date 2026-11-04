@@ -27,15 +27,23 @@ BEGIN
     SELECT TodayBookings = COUNT(*),
         TodaySeats = COALESCE(SUM(sb.SeatCount), 0),
         PendingBookings = COUNT(CASE WHEN sb.CompletionStatus = N'Pending' THEN 1 END),
+        InProgressBookings = COUNT(CASE WHEN sb.CompletionStatus = N'InProgress' THEN 1 END),
         CompletedBookings = COUNT(CASE WHEN sb.CompletionStatus = N'Completed' THEN 1 END),
         TotalBookings = COUNT(*),
         TotalPendingBookings = COUNT(CASE WHEN sb.CompletionStatus = N'Pending' THEN 1 END),
+        TotalInProgressBookings = COUNT(CASE WHEN sb.CompletionStatus = N'InProgress' THEN 1 END),
         TotalCompletedBookings = COUNT(CASE WHEN sb.CompletionStatus = N'Completed' THEN 1 END),
+        CompletedRevenue = (SELECT COALESCE(SUM(b.BillAmount), 0)
+            FROM dbo.BookingBillAmounts b
+            JOIN dbo.SeatBookingDetails completed ON completed.SeatBookingDetailsID = b.SeatBookingDetailsID
+            WHERE completed.SalonMasterID = @SalonID AND completed.BookingStatusMasterID = 2
+                AND completed.CompletionStatus = N'Completed'
+                AND completed.BookingDate >= @RangeStart AND completed.BookingDate < DATEADD(day, 1, @RangeEnd)),
         TodayRevenue = (SELECT COALESCE(SUM(b.BillIDTotalAmount), 0) FROM dbo.HairCut_Item_Bill_Master b
             JOIN dbo.SeatBookingDetails sb ON sb.SeatBookingDetailsID = b.SeatBookingDetailsID
             WHERE sb.SalonMasterID = @SalonID AND b.CreatedDate >= @RangeStart AND b.CreatedDate < DATEADD(day, 1, @RangeEnd) AND COALESCE(b.IsDeleted, 0) = 0),
         TotalCustomers = COUNT(DISTINCT sb.CustomerID),
-        ActiveServices = (SELECT COUNT(*) FROM dbo.SalonService WHERE SalonMasterID = @SalonID AND IsActive = 1
+        ActiveServices = (SELECT COUNT(*) FROM dbo.SalonOwnerServiceCatalogue WHERE SalonMasterID = @SalonID AND IsActive = 1
             AND CreatedUtc >= @ServiceStartUtc AND CreatedUtc < @ServiceEndUtc),
         UpcomingBookings = COUNT(CASE WHEN sb.BookingDate >= CONVERT(date, DATEADD(minute, 330, SYSUTCDATETIME()))
             AND sb.CompletionStatus = N'Pending' THEN 1 END)
@@ -46,7 +54,11 @@ BEGIN
         COALESCE(NULLIF(LTRIM(RTRIM(CONCAT(cr.FirstName, ' ', cr.LastName))), ''), 'Guest customer') AS CustomerName,
         COALESCE(cr.MobileNo, '') AS MobileNo, sb.BookingDate,
         MIN(ta.FullTiming) AS StartTime, COALESCE(sb.SeatCount, 0) AS SeatCount,
-        sb.CompletionStatus AS BookingStatus
+        sb.CompletionStatus AS BookingStatus,
+        CASE WHEN sb.CompletionStatus = N'Completed' THEN
+            (SELECT bill.BillAmount FROM dbo.BookingBillAmounts bill
+             WHERE bill.SeatBookingDetailsID = sb.SeatBookingDetailsID)
+        END AS BillAmount
     FROM dbo.SeatBookingDetails sb
     LEFT JOIN dbo.CustomerRegistration cr ON cr.CustomerID = sb.CustomerID
     LEFT JOIN dbo.CustomerTimeSelection ct ON ct.SeatBookingDetailsID = sb.SeatBookingDetailsID
@@ -84,8 +96,6 @@ BEGIN
     JOIN dbo.SalonMaster s ON s.SalonMasterID = o.SalonMasterID
     JOIN dbo.LocationMaster l ON l.LocationMasterID = s.LocationMasterID
     WHERE o.SalonOwnerID = @OwnerID AND o.SalonMasterID = @SalonID AND o.IsActive = 1 AND s.IsActive = 1;
-    SELECT SalonServiceID, ServiceName, Category, Price, DurationMinutes,
-        COALESCE(Description, N'') AS Description, COALESCE(ImagePath, N'') AS ImagePath, IsActive
-    FROM dbo.SalonService WHERE SalonMasterID = @SalonID ORDER BY IsActive DESC, ServiceName;
+    EXEC dbo.GetSalonOwnerServices @OwnerID=@OwnerID, @SalonID=@SalonID;
 END;
 GO

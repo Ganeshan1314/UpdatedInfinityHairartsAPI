@@ -2,6 +2,7 @@ using System.Data;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Dapper;
 using InfinityHairartsAPI.Controllers;
 using InfinityHairartsAPI.Services;
@@ -47,7 +48,7 @@ try
         CREATE TABLE dbo.SalonService(SalonServiceID uniqueidentifier DEFAULT NEWID(), SalonMasterID uniqueidentifier,
             ServiceName nvarchar(150), Category nvarchar(80) DEFAULT 'Hair', Price decimal(18,2) DEFAULT 100,
             DurationMinutes int DEFAULT 30, Description nvarchar(500), ImagePath nvarchar(500), IsActive bit NOT NULL,
-            CreatedUtc datetime2(0) NOT NULL DEFAULT SYSUTCDATETIME());
+            CreatedUtc datetime2(0) NOT NULL DEFAULT SYSUTCDATETIME(), UpdatedUtc datetime2(0));
         CREATE TABLE dbo.BookingStatusMaster(BookingStatusMasterID int PRIMARY KEY, BookingStatus nvarchar(50));
         INSERT dbo.BookingStatusMaster VALUES(1,'Selected'),(2,'Booked'),(3,'PaymentProcessing');
         CREATE TABLE dbo.CustomerRegistration(CustomerID uniqueidentifier PRIMARY KEY, FirstName nvarchar(150),LastName nvarchar(150), MobileNo nvarchar(20), GeneralAddress nvarchar(500),IsDeleted bit);
@@ -56,7 +57,11 @@ try
         CREATE TABLE dbo.CustomerTimeSelection(SeatBookingDetailsID uniqueidentifier,TimeAllocationID uniqueidentifier,PRIMARY KEY(SeatBookingDetailsID,TimeAllocationID));
         CREATE TABLE dbo.HairCut_Item_Bill_Master(UniqueBillID uniqueidentifier,SeatBookingDetailsID uniqueidentifier,CreatedDate datetime,BillIDTotalAmount decimal(18,2),IsDeleted bit);
         CREATE TABLE dbo.HairCut_Item_Customer_Bill(UniqueBillID uniqueidentifier,HairCut_Item_ID uniqueidentifier,HairCut_Item_Total decimal(18,2),HairCut_Item_Quantity int,Created_Date datetime,IsDeleted bit);
-        CREATE TABLE dbo.HairCut_Item_List(HairCut_Item_ID uniqueidentifier,HairCut_Item_Name nvarchar(150),IsDeleted bit);
+        CREATE TABLE dbo.HairCut_GroupMaster(HairCutItemGroupMaster_ID uniqueidentifier,HairCutItemGroup nvarchar(100), OrderID int);
+        CREATE TABLE dbo.HairCut_Item_List(HairCut_Item_ID uniqueidentifier,HairCut_Item_Code int,HairCut_Item_Name nvarchar(max),
+            HairCut_Item_Price int,HairCut_Item_Quantity nvarchar(max),HairCut_Item_CGST decimal(18,2),HairCut_Item_SGST decimal(18,2),
+            HairCut_Item_Taxable decimal(18,2),HairCutItemImage nvarchar(max),HairCutItemImageSystemPath nvarchar(max),
+            HairCutItemImageS3Path nvarchar(max),HairCutItemGroupMaster_ID uniqueidentifier,Created_Date datetime,Created_By uniqueidentifier,IsDeleted bit);
         """);
     async Task Deploy()
     {
@@ -142,7 +147,7 @@ try
 
     var billedService = Guid.NewGuid();
     await db.ExecuteAsync("""
-        INSERT dbo.HairCut_Item_List VALUES(@billedService,'Fixture haircut',0);
+        INSERT dbo.HairCut_Item_List(HairCut_Item_ID,HairCut_Item_Name,IsDeleted) VALUES(@billedService,'Fixture haircut',0);
         INSERT dbo.HairCut_Item_Customer_Bill
         SELECT UniqueBillID,@billedService,BillIDTotalAmount,1,CreatedDate,IsDeleted
         FROM dbo.HairCut_Item_Bill_Master;
@@ -157,6 +162,7 @@ try
     builder.Services.AddScoped<ISalonOwnerAuthenticationService, SalonOwnerAuthenticationService>();
     builder.Services.AddScoped<SalonOwnerDashboardService>();
     builder.Services.AddScoped<BookingQrService>();
+    builder.Services.AddScoped<OwnerAppointmentsService>();
     builder.Services.AddScoped<SalonOwnerPersistentSignIn>();
     builder.Services.AddDistributedMemoryCache();
     builder.Services.AddSession();
@@ -394,6 +400,195 @@ try
     await Deploy();
     Check(await Status(legacy) == "Completed", "Rerunning the migration backfills historical QR completions");
     Check(await Status(booking) == "Completed" && await Completions(booking) == 1, "Rerunning database scripts preserves existing completions");
+    async Task DeployStatusTabs()
+    {
+        var sql = await File.ReadAllTextAsync(Path.Combine(Path.GetDirectoryName(configurationPath)!, "SQL_Update_BookingStatusTabs_2026-10-31.sql"));
+        foreach (var batch in Regex.Split(sql, @"^\s*GO\s*$", RegexOptions.Multiline | RegexOptions.IgnoreCase))
+            if (!string.IsNullOrWhiteSpace(batch)) await db.ExecuteAsync(batch);
+        sql = await File.ReadAllTextAsync(Path.Combine(Path.GetDirectoryName(configurationPath)!, "SQL_Update_SalonServices_2026-11-03.sql"));
+        foreach (var batch in Regex.Split(sql, @"^\s*GO\s*$", RegexOptions.Multiline | RegexOptions.IgnoreCase))
+            if (!string.IsNullOrWhiteSpace(batch)) await db.ExecuteAsync(batch);
+    }
+    await DeployStatusTabs();
+    await DeployStatusTabs();
+    var menuDashboard = await dashboards.GetDashboardAsync(owner, salon, today, default);
+    Check(menuDashboard.Summary.ActiveServices == 2 && menuDashboard.Services.Count == 5
+        && menuDashboard.Services.Any(item => item.ServiceName == "Haircut" && item.CanEdit),
+        "The dashboard reads migrated salon haircut items and retains India date-filtered service counts");
+    var tabDate = today.AddDays(-7);
+    var pendingIDs = new List<Guid>();
+    for (var i=0;i<35;i++) pendingIDs.Add(await Booking(tabDate));
+    var startedBooking = await Booking(tabDate);
+    var finishedBooking = await Booking(tabDate);
+    var multiStartedBooking = await Booking(tabDate, multiple:true);
+    using var anonymous = new HttpClient { BaseAddress = new Uri(address) };
+    string TabUrl(string status, int page=1) => $"/api/Admin/appointments?fromDate={tabDate:yyyy-MM-dd}&toDate={tabDate:yyyy-MM-dd}&status={status}&page={page}";
+    async Task<JsonElement> Tab(string status, int page=1) {
+        using var response = await http.GetAsync(TabUrl(status,page)); response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<JsonElement>();
+    }
+    async Task<HttpResponseMessage> Start(Guid id) => await http.PostAsJsonAsync($"/api/Admin/appointments/{id}/start",new {});
+    Check((await anonymous.GetAsync(TabUrl("Pending"))).StatusCode==HttpStatusCode.Unauthorized,
+        "Status tabs require an authenticated owner");
+    Check((await anonymous.PostAsJsonAsync($"/api/Admin/appointments/{startedBooking}/start",new {})).StatusCode==HttpStatusCode.Unauthorized,
+        "Starting service requires an authenticated owner");
+    Check((await Start(foreign)).StatusCode==HttpStatusCode.NotFound && (await Start(unconfirmed)).StatusCode==HttpStatusCode.NotFound,
+        "Owners cannot start other salons' bookings or unconfirmed slot selections");
+    Check((await Start(future)).StatusCode==HttpStatusCode.Conflict && await Status(future)=="Pending",
+        "Future bookings cannot be started before the booked India time");
+    var concurrentStarts = await Task.WhenAll(Start(startedBooking),Start(startedBooking));
+    var startBodies = await Task.WhenAll(concurrentStarts.Select(response=>response.Content.ReadFromJsonAsync<JsonElement>()));
+    Check(concurrentStarts.All(response=>response.IsSuccessStatusCode) && startBodies.Select(body=>body.GetProperty("startedUtc").GetString()).Distinct().Count()==1,
+        "Concurrent Start service requests persist one original start time");
+    Check(startBodies.Count(body=>body.GetProperty("wasAlreadyStarted").GetBoolean())==1 && await Status(startedBooking)=="InProgress",
+        "Repeated Start service is idempotent and saves InProgress");
+    Check((await Complete(finishedBooking)).Body.GetProperty("bookingStatus").GetString()=="Completed",
+        "Existing direct QR completion remains supported");
+    Check((await Start(multiStartedBooking)).IsSuccessStatusCode,
+        "A multi-slot booking can be started");
+    Check((await Complete(multiStartedBooking)).Body.GetProperty("bookingStatus").GetString()=="InProgress",
+        "Completing one QR preserves InProgress until all selected appointments are completed");
+    var pendingTab=await Tab("Pending");
+    var progressTab=await Tab("InProgress");
+    var completedTab=await Tab("Completed");
+    Check(pendingTab.GetProperty("counts").GetProperty("pending").GetInt32()==35
+        && pendingTab.GetProperty("counts").GetProperty("inProgress").GetInt32()==2
+        && pendingTab.GetProperty("counts").GetProperty("completed").GetInt32()==1,
+        "Tab counts cover every confirmed booking in the selected date range");
+    var firstPage=pendingTab.GetProperty("items").EnumerateArray().Select(item=>item.GetProperty("seatBookingDetailsID").GetGuid()).ToArray();
+    var secondPage=(await Tab("Pending",2)).GetProperty("items").EnumerateArray().Select(item=>item.GetProperty("seatBookingDetailsID").GetGuid()).ToArray();
+    var thirdPage=(await Tab("Pending",3)).GetProperty("items").EnumerateArray().Select(item=>item.GetProperty("seatBookingDetailsID").GetGuid()).ToArray();
+    var fourthPage=(await Tab("Pending",4)).GetProperty("items").EnumerateArray().Select(item=>item.GetProperty("seatBookingDetailsID").GetGuid()).ToArray();
+    var allPages=firstPage.Concat(secondPage).Concat(thirdPage).Concat(fourthPage).ToArray();
+    Check(firstPage.Length==10 && secondPage.Length==10 && thirdPage.Length==10 && fourthPage.Length==5 && allPages.Distinct().Count()==35
+        && allPages.All(pendingIDs.Contains),
+        "Ten-row status pages return all 35 matching bookings without duplicates or the overview preview limit");
+    Check(progressTab.GetProperty("items").GetArrayLength()==2 && completedTab.GetProperty("items").GetArrayLength()==1,
+        "InProgress and Completed tabs return only matching bookings");
+    Check((await http.GetAsync(TabUrl("invalid"))).StatusCode==HttpStatusCode.BadRequest
+        && (await http.GetAsync(TabUrl("Pending",0))).StatusCode==HttpStatusCode.BadRequest,
+        "Invalid tab status and page are rejected");
+    var tabSummary=await Summary(tabDate);
+    Check(tabSummary.GetProperty("pendingBookings").GetInt32()==35 && tabSummary.GetProperty("inProgressBookings").GetInt32()==2
+        && tabSummary.GetProperty("completedBookings").GetInt32()==1,
+        "Dashboard summary counts reflect saved Pending, InProgress and Completed statuses");
+    Check((await Complete(multiStartedBooking,secondSlot)).Body.GetProperty("bookingStatus").GetString()=="Completed",
+        "The final QR moves a started booking from InProgress to Completed");
+    Check((await Start(multiStartedBooking)).StatusCode==HttpStatusCode.Conflict && await Status(multiStartedBooking)=="Completed",
+        "Completed bookings cannot be restarted");
+    var startedUtc=await db.ExecuteScalarAsync<DateTime>("SELECT StartedUtc FROM dbo.SeatBookingDetails WHERE SeatBookingDetailsID=@startedBooking",new {startedBooking});
+    await DeployStatusTabs();
+    Check(await Status(startedBooking)=="InProgress" && await db.ExecuteScalarAsync<DateTime>("SELECT StartedUtc FROM dbo.SeatBookingDetails WHERE SeatBookingDetailsID=@startedBooking",new {startedBooking})==startedUtc,
+        "Rerunning the status migration preserves service starts and timestamps");
+    var otherTabs=await new OwnerAppointmentsService(builder.Configuration).GetAsync(otherOwner,otherSalon,tabDate,tabDate,"Pending",1,default);
+    Check(otherTabs.Items.Count==0 && otherTabs.Counts.Pending==0 && otherTabs.Counts.InProgress==0 && otherTabs.Counts.Completed==0,
+        "All three status tabs stay isolated to the signed-in salon");
+    for (var i=0;i<12;i++) {
+        var past=today.AddDays(-40+i);
+        await Booking(past);
+        var inProgress=await Booking(past);
+        (await Start(inProgress)).EnsureSuccessStatusCode();
+        var recentCompletedBooking=await Booking(past);
+        if ((await Complete(recentCompletedBooking)).Status!=HttpStatusCode.OK) throw new Exception("Recent-view fixture QR completion failed.");
+    }
+    foreach(var status in new[]{"Pending","InProgress","Completed"}) {
+        using var response=await http.GetAsync($"/api/Admin/appointments?status={status}");
+        response.EnsureSuccessStatusCode();
+        var recent=await response.Content.ReadFromJsonAsync<JsonElement>();
+        var rows=recent.GetProperty("items").EnumerateArray().ToArray();
+        Check(recent.GetProperty("pageSize").GetInt32()==10 && rows.Length==10 && recent.GetProperty("totalCount").GetInt32()>10,
+            $"{status} loads the latest 10 appointments without requiring any dates");
+        var dates=rows.Select(row=>row.GetProperty("bookingDate").GetDateTime()).ToArray();
+        Check(dates.SequenceEqual(dates.OrderByDescending(date=>date)) && rows.All(row=>row.GetProperty("bookingStatus").GetString()==status),
+            $"Unfiltered {status} appointments are ordered by newest appointment date first");
+    }
+    Check((await http.GetAsync($"/api/Admin/appointments?fromDate={tabDate:yyyy-MM-dd}")).StatusCode==HttpStatusCode.BadRequest
+        && (await http.GetAsync($"/api/Admin/appointments?toDate={tabDate:yyyy-MM-dd}")).StatusCode==HttpStatusCode.BadRequest,
+        "Partially supplied dates are rejected rather than silently broadening the appointment search");
+    var emptyOtherDates=await new OwnerAppointmentsService(builder.Configuration).GetAsync(otherOwner,otherSalon,null,null,"Pending",1,default);
+    Check(emptyOtherDates.TotalCount==1 && emptyOtherDates.Items.Single().SeatBookingDetailsID==foreign,
+        "Unfiltered recent appointments and counts remain isolated to the signed-in salon");
+    var amountDate=today.AddDays(-90);
+    var amountBooking=await Booking(amountDate,multiple:true);
+    var amountPending=await Booking(amountDate);
+    var amountInProgress=await Booking(amountDate);
+    var amountZero=await Booking(amountDate);
+    var amountMissing=await Booking(amountDate);
+    var amountForeign=await Booking(amountDate,salonId:otherSalon);
+    var amountOutside=await Booking(amountDate.AddDays(-1));
+    await db.ExecuteAsync("""
+        INSERT dbo.HairCut_Item_Bill_Master VALUES
+            (NEWID(),@amountBooking,DATEADD(day,-30,@amountDate),125.50,0),
+            (NEWID(),@amountBooking,DATEADD(day,30,@amountDate),74.50,0),
+            (NEWID(),@amountBooking,@amountDate,999,1),
+            (NEWID(),@amountPending,@amountDate,1000,0),
+            (NEWID(),@amountInProgress,@amountDate,2000,0),
+            (NEWID(),@amountZero,@amountDate,0,0),
+            (NEWID(),@amountForeign,@amountDate,700,0),
+            (NEWID(),@amountOutside,@amountDate,500,0);
+        """,new {amountBooking,amountPending,amountInProgress,amountZero,amountForeign,amountOutside,amountDate});
+    (await Start(amountBooking)).EnsureSuccessStatusCode();
+    (await Start(amountInProgress)).EnsureSuccessStatusCode();
+    await Complete(amountZero); await Complete(amountMissing); await Complete(amountOutside);
+    await db.ExecuteAsync("UPDATE dbo.SeatBookingDetails SET CompletionStatus='Completed' WHERE SeatBookingDetailsID=@amountForeign",new {amountForeign});
+    Check((await Summary(amountDate)).GetProperty("completedRevenue").GetDecimal()==0,
+        "Completed amount excludes pending, in-progress, other-salon and out-of-range booking bills");
+    await Complete(amountBooking);
+    Check((await Summary(amountDate)).GetProperty("completedRevenue").GetDecimal()==0,
+        "A partly completed multi-slot booking does not contribute to the completed amount");
+    await Complete(amountBooking,secondSlot);
+    Check((await Summary(amountDate)).GetProperty("completedRevenue").GetDecimal()==200m,
+        "Final completion totals nondeleted booking bills even when bill creation dates differ from the appointment date");
+    using(var amountResponse=await http.GetAsync($"/api/Admin/appointments?fromDate={amountDate:yyyy-MM-dd}&toDate={amountDate:yyyy-MM-dd}&status=Completed")) {
+        amountResponse.EnsureSuccessStatusCode();
+        var amountItems=(await amountResponse.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("items").EnumerateArray().ToArray();
+        Check(amountItems.Single(item=>item.GetProperty("seatBookingDetailsID").GetGuid()==amountBooking).GetProperty("billAmount").GetDecimal()==200m,
+            "Completed appointment amounts sum multiple bills once without multiplying by appointment slots");
+        Check(amountItems.Single(item=>item.GetProperty("seatBookingDetailsID").GetGuid()==amountZero).GetProperty("billAmount").GetDecimal()==0m
+            && amountItems.Single(item=>item.GetProperty("seatBookingDetailsID").GetGuid()==amountMissing).GetProperty("billAmount").ValueKind==JsonValueKind.Null,
+            "Completed appointments distinguish an actual zero bill from no bill");
+    }
+    using(var recentAmounts=await http.GetAsync("/api/Admin/appointments?status=Completed")) {
+        recentAmounts.EnsureSuccessStatusCode();
+        var amountItems=(await recentAmounts.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("items").EnumerateArray();
+        Check(amountItems.Single(item=>item.GetProperty("seatBookingDetailsID").GetGuid()==booking).GetProperty("billAmount").GetDecimal()==900m,
+            "Latest completed appointments include their linked bill amount without date filtering");
+    }
+    await Complete(amountBooking,secondSlot);
+    Check((await Summary(amountDate)).GetProperty("completedRevenue").GetDecimal()==200m,
+        "Repeated QR completion does not increase the completed amount");
+    using(var amountDashboard=await http.GetAsync($"/api/Admin/dashboard?date={amountDate:yyyy-MM-dd}")) {
+        amountDashboard.EnsureSuccessStatusCode();
+        var amountBody=await amountDashboard.Content.ReadFromJsonAsync<JsonElement>();
+        Check(amountBody.GetProperty("upcomingAppointments").EnumerateArray()
+            .Single(item=>item.GetProperty("seatBookingDetailsID").GetGuid()==amountBooking).GetProperty("billAmount").GetDecimal()==200m,
+            "The overview appointment data includes the completed booking amount");
+    }
+    await DeployStatusTabs();
+    Check((await Summary(amountDate)).GetProperty("completedRevenue").GetDecimal()==200m,
+        "Rerunning the migration preserves completed booking amounts");
+    var legacyAmountBooking=await Booking(amountDate);
+    var legacyAmountBill=Guid.NewGuid();
+    var deletedItemsBill=Guid.NewGuid();
+    await db.ExecuteAsync("""
+        INSERT dbo.HairCut_Item_Bill_Master VALUES
+            (@legacyAmountBill,@legacyAmountBooking,@amountDate,0,0),
+            (@deletedItemsBill,@legacyAmountBooking,@amountDate,500,0);
+        INSERT dbo.HairCut_Item_Customer_Bill VALUES
+            (@legacyAmountBill,@billedService,110.25,1,@amountDate,0),
+            (@legacyAmountBill,@billedService,89.75,1,@amountDate,0),
+            (@legacyAmountBill,@billedService,900,1,@amountDate,1),
+            (@deletedItemsBill,@billedService,500,1,@amountDate,1);
+        """,new {legacyAmountBooking,legacyAmountBill,deletedItemsBill,amountDate,billedService});
+    await Complete(legacyAmountBooking);
+    var legacyAmountPage=await new OwnerAppointmentsService(builder.Configuration).GetAsync(owner,salon,amountDate,amountDate,"Completed",1,default);
+    Check(legacyAmountPage.Items.Single(item=>item.SeatBookingDetailsID==legacyAmountBooking).BillAmount==200m,
+        "Completed amounts use recorded service lines when legacy bill headers are zero");
+    Check((await Summary(amountDate)).GetProperty("completedRevenue").GetDecimal()==400m,
+        "Completed totals include priced legacy services while excluding deleted service lines");
+    await db.ExecuteAsync("UPDATE dbo.HairCut_Item_Bill_Master SET BillIDTotalAmount=7777 WHERE UniqueBillID=@legacyAmountBill",new {legacyAmountBill});
+    Check((await Summary(amountDate)).GetProperty("completedRevenue").GetDecimal()==400m,
+        "Service-line-backed amounts stay aligned with customer booking history instead of stale bill-header totals");
     Check(await db.ExecuteScalarAsync<int>("SELECT @@TRANCOUNT") == 0, "Checks leave no open transaction");
 }
 finally

@@ -83,13 +83,29 @@ public sealed class FirebasePushNotificationSender
             cancellationToken);
     }
 
+    public Task<PushSendResult> SendOwnerBookingAsync(OwnerPushDelivery booking, CancellationToken cancellationToken)
+    {
+        var time = booking.StartTime.HasValue
+            ? DateTime.Today.Add(booking.StartTime.Value).ToString("h:mm tt", CultureInfo.InvariantCulture)
+            : "Time pending";
+        return SendAsync([booking.DeviceToken], "New booking",
+            $"{booking.CustomerName} booked {booking.BookingDate:dd MMM} at {time}.",
+            new Dictionary<string, string> {
+                ["type"] = "owner-new-booking", ["bookingId"] = booking.SeatBookingDetailsID.ToString("D"),
+                ["notificationId"] = booking.NotificationID.ToString(CultureInfo.InvariantCulture),
+                ["salonId"] = booking.SalonMasterID.ToString("D"),
+                ["bookingDate"] = booking.BookingDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)
+            }, $"owner-booking-{booking.NotificationID}", cancellationToken, "owner_bookings");
+    }
+
     private async Task<PushSendResult> SendAsync(
         IReadOnlyList<string> tokens,
         string title,
         string body,
         Dictionary<string, string> data,
         string tag,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string channelId = "booking_reminders")
     {
         if (_messaging is null)
         {
@@ -118,7 +134,7 @@ public sealed class FirebasePushNotificationSender
                         Priority = Priority.High,
                         Notification = new AndroidNotification
                         {
-                            ChannelId = "booking_reminders",
+                            ChannelId = channelId,
                             DefaultSound = true,
                             Tag = tag
                         }

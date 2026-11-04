@@ -2,6 +2,7 @@
 using Microsoft.Extensions.FileProviders;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Services.AddScoped<ICustomerSalonDirectory, CustomerSalonDirectoryService>();
 
 if (builder.Configuration.GetValue("FileLogging:Enabled", true))
 {
@@ -66,11 +67,15 @@ builder.Services.AddScoped<ISalonOwnerAuthenticationService>(services => service
 builder.Services.AddSalonOwnerPersistentSignIn(builder.Configuration, builder.Environment);
 SuperAdminAuthentication.Register(builder.Services);
 builder.Services.AddScoped<SalonOwnerDashboardService>();
+builder.Services.AddScoped<SalonOwnerServicesService>();
 builder.Services.AddScoped<BookingQrService>();
+builder.Services.AddScoped<OwnerAppointmentsService>();
 builder.Services.Configure<BookingReminderOptions>(builder.Configuration.GetSection("Notifications"));
 builder.Services.AddSingleton<NotificationRepository>();
 builder.Services.AddSingleton<FirebasePushNotificationSender>();
 builder.Services.AddHostedService<BookingReminderWorker>();
+builder.Services.AddSingleton<OwnerBookingNotificationRepository>();
+builder.Services.AddHostedService<OwnerBookingPushWorker>();
 
 builder.Services.AddDistributedMemoryCache();
 builder.Services.AddMemoryCache();
@@ -120,6 +125,21 @@ app.UseStaticFiles(new StaticFileOptions
 {
     FileProvider = new PhysicalFileProvider(Path.Combine(app.Environment.ContentRootPath, "CustomerImages")),
     RequestPath = "/CustomerImages"
+});
+
+Directory.CreateDirectory(Path.Combine(app.Environment.ContentRootPath, "ServiceImages"));
+app.UseStaticFiles(new StaticFileOptions
+{
+    FileProvider = new PhysicalFileProvider(Path.Combine(app.Environment.ContentRootPath, "ServiceImages")),
+    RequestPath = "/ServiceImages"
+});
+
+var haircutImageDirectory = Path.Combine(app.Environment.ContentRootPath, "Images", "HairCutItemListImages");
+Directory.CreateDirectory(haircutImageDirectory);
+app.UseStaticFiles(new StaticFileOptions
+{
+    FileProvider = new PhysicalFileProvider(haircutImageDirectory),
+    RequestPath = "/Images/HairCutItemListImages"
 });
 
 app.UseRouting();

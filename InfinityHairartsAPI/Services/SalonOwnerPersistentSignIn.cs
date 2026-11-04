@@ -13,7 +13,8 @@ public sealed class SalonOwnerPersistentSignIn(ISalonOwnerAuthenticationService 
     public const string Contract = "persistent-cookie-v1";
     private const string StampClaim = "salonexa:credential-version";
     private static readonly object RestoredOwnerKey = new();
-    private static readonly string[] OwnerSessionKeys = ["SalonOwnerID", "SalonMasterID", "SalonOwnerName", "SalonName"];
+    private const string SessionStampKey = "SalonOwnerAuthenticationStamp";
+    private static readonly string[] OwnerSessionKeys = ["SalonOwnerID", "SalonMasterID", "SalonOwnerName", "SalonName", SessionStampKey];
 
     public Task SignInAsync(HttpContext context, SalonOwnerLoginResponse owner)
     {
@@ -39,6 +40,22 @@ public sealed class SalonOwnerPersistentSignIn(ISalonOwnerAuthenticationService 
         {
             // A rejected ticket must not fall back to stale owner session data.
             if (context.Request.Cookies.ContainsKey(CookieName)) await SignOutAsync(context);
+            else if (context.Session.GetString("SalonOwnerID") is { } legacyId)
+            {
+                var legacyStamp = context.Session.GetString(SessionStampKey);
+                var legacyOwner = !string.IsNullOrEmpty(legacyStamp) && Guid.TryParse(legacyId, out var legacyOwnerId)
+                    ? await owners.GetActiveSessionOwnerAsync(legacyOwnerId, context.RequestAborted)
+                    : null;
+                // Removing the persistent cookie cannot revive a server session
+                // whose credentials changed. Unversioned sessions must sign in.
+                if (legacyOwner is null || legacyStamp != legacyOwner.AuthenticationStamp)
+                    await SignOutAsync(context);
+                else
+                {
+                    await SignInAsync(context, legacyOwner);
+                    context.Items[RestoredOwnerKey] = legacyOwner;
+                }
+            }
             return;
         }
 
@@ -75,6 +92,7 @@ public sealed class SalonOwnerPersistentSignIn(ISalonOwnerAuthenticationService 
         context.Session.SetString("SalonMasterID", owner.SalonMasterID.ToString());
         context.Session.SetString("SalonOwnerName", owner.OwnerName);
         context.Session.SetString("SalonName", owner.SalonName);
+        context.Session.SetString(SessionStampKey, owner.AuthenticationStamp);
     }
 }
 

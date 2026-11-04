@@ -113,10 +113,31 @@ namespace InfinityHairartsAPI.Controllers
         }
 
         [HttpPost("logout")]
-        public async Task<IActionResult> Logout()
+        public async Task<IActionResult> Logout(
+            [FromBody(EmptyBodyBehavior = Microsoft.AspNetCore.Mvc.ModelBinding.EmptyBodyBehavior.Allow)] OwnerLogoutRequest? request,
+            CancellationToken cancellationToken)
         {
+            if (!string.IsNullOrWhiteSpace(request?.PushToken) && request.PushToken.Length <= 512)
+            {
+                await _persistentSignIn.RestoreSessionAsync(HttpContext);
+                if (Guid.TryParse(HttpContext.Session.GetString("SalonOwnerID"), out var ownerId))
+                {
+                    try { await HttpContext.RequestServices.GetRequiredService<OwnerBookingNotificationRepository>()
+                        .UnregisterAsync(ownerId, request.PushToken, cancellationToken); }
+                    catch (SqlException exception) {
+                        // Signing out must still work if the notification migration is unavailable.
+                        HttpContext.RequestServices.GetRequiredService<ILogger<AdminController>>()
+                            .LogError(exception, "Could not unregister the owner's push device during sign-out.");
+                    }
+                }
+            }
             await _persistentSignIn.SignOutAsync(HttpContext);
             return NoContent();
+        }
+
+        public sealed class OwnerLogoutRequest
+        {
+            public string? PushToken { get; set; }
         }
 
         [HttpGet("dashboard")]
