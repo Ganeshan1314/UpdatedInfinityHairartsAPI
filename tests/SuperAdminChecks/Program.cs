@@ -13,13 +13,13 @@ var builder = WebApplication.CreateBuilder(new WebApplicationOptions { Args = []
 builder.Logging.ClearProviders();
 builder.WebHost.UseUrls("http://127.0.0.1:0");
 builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?> {
-    ["SuperAdmin:UserName"] = "platform-owner", ["SuperAdmin:DisplayName"] = "Application owner",
-    ["SuperAdmin:PasswordHash"] = new PasswordHasher<string>().HashPassword("platform-owner", "fixture-password-123"),
     ["Authentication:KeyRingPath"] = Path.Combine(AppContext.BaseDirectory, "test-keys"),
 });
 builder.Services.AddControllers().AddApplicationPart(typeof(SuperAdminController).Assembly);
 builder.Services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(builder.Configuration["Authentication:KeyRingPath"]!));
 SuperAdminAuthentication.Register(builder.Services);
+var accounts = new FixtureSuperAdminAccounts();
+builder.Services.AddSingleton<ISuperAdminAccountStore>(accounts);
 var fixture = new FixtureDashboard();
 builder.Services.AddSingleton<ISuperAdminDashboard>(fixture);
 builder.Services.AddAuthentication().AddCookie("FixtureSalonOwner", options => options.Cookie.Name = "Salonexa.Owner");
@@ -34,6 +34,18 @@ app.MapPost("/fixture/owner", async (HttpContext context) => {
     await context.SignInAsync("FixtureSalonOwner", new ClaimsPrincipal(new ClaimsIdentity([
         new Claim(ClaimTypes.NameIdentifier, "salon-owner"), new Claim(ClaimTypes.Role, "SuperAdmin")
     ], "FixtureSalonOwner")));
+    return Results.NoContent();
+});
+// Deliberately issue malformed platform tickets only inside this test host.
+app.MapPost("/fixture/platform-ticket/{role}", async (string role, HttpContext context) => {
+    var claims = new List<Claim> {
+        new(ClaimTypes.NameIdentifier, accounts.Account!.SuperAdminID.ToString()),
+        new(ClaimTypes.Name, accounts.Account.UserName),
+        new(SuperAdminAuthentication.StampClaim, SuperAdminAuthentication.StampFor(accounts.Account))
+    };
+    if (role != "missing") claims.Add(new Claim(ClaimTypes.Role, role));
+    await context.SignInAsync(SuperAdminAuthentication.Scheme,
+        new ClaimsPrincipal(new ClaimsIdentity(claims, SuperAdminAuthentication.Scheme)));
     return Results.NoContent();
 });
 await app.StartAsync();
@@ -71,15 +83,31 @@ try
     using (var response = await Send(HttpMethod.Post, "/fixture/owner")) Check(response.IsSuccessStatusCode, "A separate salon-owner ticket is issued for isolation checks");
     using (var response = await Send(HttpMethod.Get, "/api/SuperAdmin/dashboard"))
         Check(response.StatusCode == HttpStatusCode.Unauthorized, "A salon-owner cookie with a forged role cannot access platform data");
-    using (var response = await Send(HttpMethod.Post, "/api/SuperAdmin/login", credentials)) {
+    foreach (var role in new[] { "missing", "SalonOwner" }) {
+        using (var response = await Send(HttpMethod.Post, "/fixture/platform-ticket/" + role))
+            Check(response.IsSuccessStatusCode, "A malformed platform ticket can be issued by the test host: " + role);
+        using (var response = await Send(HttpMethod.Put, $"/api/SuperAdmin/salons/{fixture.SalonId}/visibility", new { isVisibleToCustomers = true, expectedVisible = false }))
+            Check(response.StatusCode == HttpStatusCode.Unauthorized && fixture.Writes == 0, "A platform ticket cannot approve salons without the SuperAdmin role: " + role);
+        using (var response = await Send(HttpMethod.Get, "/api/SuperAdmin/session"))
+            Check(response.StatusCode == HttpStatusCode.Unauthorized, "A rejected role cannot restore a platform session: " + role);
+    }
+    using (var response = await Send(HttpMethod.Post, "/api/SuperAdmin/login", new { credentials.userName, credentials.password, role = "SalonOwner" })) {
         Check(response.IsSuccessStatusCode, "The configured application owner can sign in");
         var cookie = response.Headers.GetValues("Set-Cookie").Single(value => value.StartsWith(SuperAdminAuthentication.CookieName + "="));
         Check(cookie.Contains("httponly", StringComparison.OrdinalIgnoreCase) && cookie.Contains("secure", StringComparison.OrdinalIgnoreCase)
             && cookie.Contains("samesite=none", StringComparison.OrdinalIgnoreCase), "The platform ticket is HTTP-only, secure and supports the app origin");
         var body = await response.Content.ReadAsStringAsync();
         Check(!body.Contains("password", StringComparison.OrdinalIgnoreCase) && !body.Contains("stamp", StringComparison.OrdinalIgnoreCase), "Sign-in does not expose credential material");
+        using var session = System.Text.Json.JsonDocument.Parse(body);
+        Check(session.RootElement.GetProperty("role").GetString() == SuperAdminAuthentication.Role,
+            "The server assigns the SuperAdmin role independently of the requested role");
     }
-    using (var response = await Send(HttpMethod.Get, "/api/SuperAdmin/session")) Check(response.IsSuccessStatusCode, "Server-validated session restoration succeeds");
+    using (var response = await Send(HttpMethod.Get, "/api/SuperAdmin/session")) {
+        Check(response.IsSuccessStatusCode, "Server-validated session restoration succeeds");
+        using var session = System.Text.Json.JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Check(session.RootElement.GetProperty("role").GetString() == SuperAdminAuthentication.Role,
+            "Restored sessions carry the application-owner role");
+    }
     using (var response = await Send(HttpMethod.Get, "/api/SuperAdmin/dashboard?fromDate=2026-10-01&toDate=2026-10-27")) {
         Check(response.IsSuccessStatusCode, "Authenticated overview requests succeed");
         Check(fixture.From == new DateOnly(2026, 10, 1) && fixture.To == new DateOnly(2026, 10, 27), "The complete date range reaches the data service");
@@ -102,10 +130,10 @@ try
     using (var response = await Send(HttpMethod.Post, "/api/SuperAdmin/logout")) Check(response.StatusCode == HttpStatusCode.NoContent, "Sign out succeeds");
     using (var response = await Send(HttpMethod.Get, "/api/SuperAdmin/session")) Check(response.StatusCode == HttpStatusCode.Unauthorized, "The signed-out browser cannot restore its session");
     using (var response = await Send(HttpMethod.Post, "/api/SuperAdmin/login", credentials)) Check(response.IsSuccessStatusCode, "The owner can sign in again");
-    builder.Configuration["SuperAdmin:PasswordHash"] = new PasswordHasher<string>().HashPassword("platform-owner", "rotated-password-456");
+    accounts.Account = accounts.Account! with { PasswordHash = new PasswordHasher<string>().HashPassword("platform-owner", "rotated-password-456") };
     using (var response = await Send(HttpMethod.Get, "/api/SuperAdmin/session")) Check(response.StatusCode == HttpStatusCode.Unauthorized, "Credential rotation revokes existing tickets");
-    builder.Configuration["SuperAdmin:PasswordHash"] = null;
-    using (var response = await Send(HttpMethod.Post, "/api/SuperAdmin/login", credentials)) Check(response.StatusCode == HttpStatusCode.Unauthorized, "An unconfigured owner account fails closed");
+    accounts.Account = null;
+    using (var response = await Send(HttpMethod.Post, "/api/SuperAdmin/login", credentials)) Check(response.StatusCode == HttpStatusCode.Unauthorized, "A missing database account cannot sign in");
     for (var attempt = 0; attempt < 3; attempt++) {
         using var response = await Send(HttpMethod.Post, "/api/SuperAdmin/login", credentials);
         if (response.StatusCode == HttpStatusCode.TooManyRequests) { Check(true, "Repeated login attempts are rate limited"); break; }
@@ -132,4 +160,15 @@ sealed class FixtureDashboard : ISuperAdminDashboard
     public Task SetVisibility(Guid salonId, bool visible, bool expectedVisible, string actor, CancellationToken cancellationToken) {
         Writes++; Actor = actor; return Task.CompletedTask;
     }
+}
+
+sealed class FixtureSuperAdminAccounts : ISuperAdminAccountStore
+{
+    public SuperAdminAccount? Account = new(Guid.NewGuid(), "platform-owner", "Application owner",
+        new PasswordHasher<string>().HashPassword("platform-owner", "fixture-password-123"), "SuperAdmin", true);
+    public Task<SuperAdminAccount?> FindByUserNameAsync(string userName, CancellationToken cancellationToken) =>
+        Task.FromResult(Account?.UserName == userName ? Account : null);
+    public Task<SuperAdminAccount?> FindByIdAsync(Guid id, CancellationToken cancellationToken) =>
+        Task.FromResult(Account?.SuperAdminID == id ? Account : null);
+    public Task<bool> MarkLoginAsync(SuperAdminAccount account, CancellationToken cancellationToken) => Task.FromResult(Account == account);
 }

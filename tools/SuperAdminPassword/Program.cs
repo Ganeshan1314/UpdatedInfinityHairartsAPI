@@ -9,7 +9,7 @@ if (password.Length is < 12 or > 256 || password != confirmation)
     Console.Error.WriteLine("Passwords must match and contain 12–256 characters.");
     return 1;
 }
-Console.WriteLine("Set SuperAdmin__PasswordHash on the API server to:");
+Console.WriteLine("PasswordHash for dbo.SuperAdmin (keep the hash private):");
 Console.WriteLine(new PasswordHasher<string>().HashPassword("super-admin", password));
 return 0;
 

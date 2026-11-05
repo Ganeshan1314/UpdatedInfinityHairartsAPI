@@ -5,6 +5,9 @@
 /PublishAPI/
 **/App_Data/DataProtectionKeys/
 
+# Local verification output
+/.codex-tmp-*.log
+
 # Local application secrets and credentials
 InfinityHairartsAPI/appsettings.json
 InfinityHairartsAPI/infinity-hair-arts-firebase-adminsdk-*.json

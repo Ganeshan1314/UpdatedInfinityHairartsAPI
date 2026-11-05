@@ -22,7 +22,7 @@ public class AppoinmentController : ControllerBase
 	}
 
 	[HttpPost("getSeatTimeAllocation")]
-	public ActionResult getSeatTimeAllocation([FromQuery] DateTime? bookingDate = null)
+	public ActionResult getSeatTimeAllocation([FromQuery] DateTime? bookingDate = null, [FromQuery] Guid? salonMasterID = null)
 	{
 		if (bookingDate.HasValue && !CustomerBookingRules.IsAvailableDate(bookingDate.Value, CustomerBookingRules.Today))
 		{
@@ -31,7 +31,7 @@ public class AppoinmentController : ControllerBase
 				message = "Please choose an available booking date."
 			});
 		}
-		Tuple<string, List<Dictionary<string, object>>, int, List<Dictionary<string, object>>, List<Dictionary<string, object>>> seatTimeAllocation = _appoinmentService.getSeatTimeAllocation(bookingDate);
+		Tuple<string, List<Dictionary<string, object>>, int, List<Dictionary<string, object>>, List<Dictionary<string, object>>> seatTimeAllocation = _appoinmentService.getSeatTimeAllocation(bookingDate, salonMasterID);
 		if (seatTimeAllocation.Item1 != "Success")
 		{
 			return new JsonResult(seatTimeAllocation);

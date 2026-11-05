@@ -9,6 +9,20 @@ IF COL_LENGTH(N'dbo.SalonMaster', N'IsVisibleToCustomers') IS NULL
     ALTER TABLE dbo.SalonMaster ADD IsVisibleToCustomers bit NOT NULL
         CONSTRAINT DF_SalonMaster_IsVisibleToCustomers DEFAULT(0) WITH VALUES;
 GO
+-- Existing installations may have a visible-by-default constraint (or no default).
+-- New salons must wait for approval; changing the default preserves existing rows.
+DECLARE @VisibilityDefault sysname;
+SELECT @VisibilityDefault = dc.name
+FROM sys.default_constraints dc
+INNER JOIN sys.columns c ON c.object_id = dc.parent_object_id AND c.column_id = dc.parent_column_id
+WHERE dc.parent_object_id = OBJECT_ID(N'dbo.SalonMaster') AND c.name = N'IsVisibleToCustomers';
+IF @VisibilityDefault IS NOT NULL
+BEGIN
+    DECLARE @DropVisibilityDefault nvarchar(400) = N'ALTER TABLE dbo.SalonMaster DROP CONSTRAINT ' + QUOTENAME(@VisibilityDefault);
+    EXEC sys.sp_executesql @DropVisibilityDefault;
+END;
+ALTER TABLE dbo.SalonMaster ADD CONSTRAINT DF_SalonMaster_IsVisibleToCustomers DEFAULT(0) FOR IsVisibleToCustomers;
+GO
 IF OBJECT_ID(N'dbo.SuperAdminSalonAudit', N'U') IS NULL
 BEGIN
     CREATE TABLE dbo.SuperAdminSalonAudit (

@@ -10,7 +10,7 @@ public sealed record PushSendResult(
     IReadOnlyCollection<string> InvalidTokens,
     IReadOnlyCollection<string> Errors);
 
-public sealed class FirebasePushNotificationSender
+public sealed class FirebasePushNotificationSender : IOwnerBookingPushSender
 {
     private readonly FirebaseMessaging? _messaging;
 
@@ -83,13 +83,28 @@ public sealed class FirebasePushNotificationSender
             cancellationToken);
     }
 
+    public Task<PushSendResult> SendOwnerBookingAsync(OwnerBookingPushDelivery delivery, CancellationToken cancellationToken)
+    {
+        var when = delivery.BookingDate.ToString("d MMM yyyy", CultureInfo.InvariantCulture);
+        if (delivery.StartTime is { } time) when += " at " + DateTime.Today.Add(time).ToString("h:mm tt", CultureInfo.InvariantCulture);
+        return SendAsync([delivery.DeviceToken], "New appointment booked", $"{delivery.CustomerName} booked {delivery.SeatCount} seat(s) for {when}.",
+            new Dictionary<string, string> {
+                ["type"] = "owner-new-booking", ["route"] = "dashboard",
+                ["salonId"] = delivery.SalonMasterID.ToString("D"),
+                ["bookingId"] = delivery.SeatBookingDetailsID.ToString("D"),
+                ["bookingDate"] = delivery.BookingDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                ["notificationId"] = delivery.NotificationID.ToString(CultureInfo.InvariantCulture)
+            }, $"owner-booking-{delivery.NotificationID}", cancellationToken, "owner_bookings");
+    }
+
     private async Task<PushSendResult> SendAsync(
         IReadOnlyList<string> tokens,
         string title,
         string body,
         Dictionary<string, string> data,
         string tag,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string channelId = "booking_reminders")
     {
         if (_messaging is null)
         {
@@ -118,7 +133,7 @@ public sealed class FirebasePushNotificationSender
                         Priority = Priority.High,
                         Notification = new AndroidNotification
                         {
-                            ChannelId = "booking_reminders",
+                            ChannelId = channelId,
                             DefaultSound = true,
                             Tag = tag
                         }

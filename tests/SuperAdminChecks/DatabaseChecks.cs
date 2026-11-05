@@ -31,6 +31,7 @@ internal static class DatabaseChecks
         await using var connection = new SqlConnection(connectionSettings.ConnectionString);
         try {
         await connection.OpenAsync();
+        await AccountDatabaseChecks.Run(connection, connectionSettings.ConnectionString, root);
         await connection.ExecuteAsync("""
             CREATE TABLE dbo.LocationMaster(LocationMasterID uniqueidentifier PRIMARY KEY, LocationName nvarchar(150));
             INSERT dbo.LocationMaster VALUES(NEWID(), N'Fixture city');
@@ -49,10 +50,11 @@ internal static class DatabaseChecks
 
         // Each check rolls back both migration DDL and fixtures. Rejected procedures can roll back the
         // entire transaction, so independent failure checks intentionally use separate transactions.
-        async Task InTransaction(Func<SqlTransaction, Task> check)
+        async Task InTransaction(Func<SqlTransaction, Task> check, Func<SqlTransaction, Task>? beforeMigration = null)
         {
             await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync();
             try {
+                if (beforeMigration is not null) await beforeMigration(transaction);
                 var script = await File.ReadAllTextAsync(Path.Combine(root, "InfinityHairartsAPI", "Database", "SuperAdminDashboard.sql"));
                 foreach (var batch in Regex.Split(script, @"^\s*GO\s*$", RegexOptions.Multiline | RegexOptions.IgnoreCase))
                     if (!string.IsNullOrWhiteSpace(batch)) await connection.ExecuteAsync(batch, transaction: transaction);
@@ -60,6 +62,30 @@ internal static class DatabaseChecks
             }
             finally { if (transaction.Connection is not null) await transaction.RollbackAsync(); }
         }
+        foreach (var withDefault in new[] { true, false }) await InTransaction(async transaction => {
+            // Run again to verify that applying the migration twice is safe.
+            var script = await File.ReadAllTextAsync(Path.Combine(root, "InfinityHairartsAPI", "Database", "SuperAdminDashboard.sql"));
+            foreach (var batch in Regex.Split(script, @"^\s*GO\s*$", RegexOptions.Multiline | RegexOptions.IgnoreCase))
+                if (!string.IsNullOrWhiteSpace(batch)) await connection.ExecuteAsync(batch, transaction: transaction);
+            Check(await connection.QuerySingleAsync<bool>("SELECT IsVisibleToCustomers FROM dbo.SalonMaster WHERE SalonName = N'Existing approved salon'", transaction: transaction),
+                "Rerunning the migration preserves existing approval (legacy default: " + withDefault + ")");
+            await connection.ExecuteAsync("""
+                INSERT dbo.SalonMaster(SalonMasterID, SalonName, LocationMasterID)
+                SELECT NEWID(), N'New salon awaiting approval', LocationMasterID FROM dbo.LocationMaster;
+                """, transaction: transaction);
+            Check(!await connection.QuerySingleAsync<bool>("SELECT IsVisibleToCustomers FROM dbo.SalonMaster WHERE SalonName = N'New salon awaiting approval'", transaction: transaction),
+                "New salons default to hidden (legacy default: " + withDefault + ")");
+            var location = await connection.QueryFirstAsync<Guid>("SELECT LocationMasterID FROM dbo.LocationMaster", transaction: transaction);
+            var visible = await connection.QueryAsync<dynamic>("dbo.getActiveSalonsByLocation", new { LocationMasterID = location }, transaction, commandType: CommandType.StoredProcedure);
+            Check(!visible.Any(row => (string)row.SalonName == "New salon awaiting approval"), "New salons are excluded from customer discovery until approval");
+        }, async transaction => {
+            await connection.ExecuteAsync("ALTER TABLE dbo.SalonMaster ADD IsVisibleToCustomers bit NOT NULL" +
+                (withDefault ? " CONSTRAINT LegacyVisibilityDefault DEFAULT(1) WITH VALUES" : ""), transaction: transaction);
+            await connection.ExecuteAsync("""
+                INSERT dbo.SalonMaster(SalonMasterID, SalonName, LocationMasterID, IsVisibleToCustomers)
+                SELECT NEWID(), N'Existing approved salon', LocationMasterID, 1 FROM dbo.LocationMaster;
+                """, transaction: transaction);
+        });
         async Task<Guid> CreateSalon(SqlTransaction transaction, bool active = true)
         {
             var locationId = await connection.QueryFirstAsync<Guid>("SELECT TOP(1) LocationMasterID FROM dbo.LocationMaster", transaction: transaction);

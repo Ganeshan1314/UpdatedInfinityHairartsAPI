@@ -10,24 +10,27 @@ using Microsoft.Data.SqlClient;
 namespace InfinityHairartsAPI.Controllers;
 
 [ApiController, Route("api/SuperAdmin")]
-[Authorize(AuthenticationSchemes = SuperAdminAuthentication.Scheme)]
+[Authorize(AuthenticationSchemes = SuperAdminAuthentication.Scheme, Roles = SuperAdminAuthentication.Role)]
 [ResponseCache(Location = ResponseCacheLocation.None, NoStore = true)]
 public sealed class SuperAdminController(SuperAdminAuthentication authentication, ISuperAdminDashboard dashboard) : ControllerBase
 {
     [AllowAnonymous, HttpPost("login"), EnableRateLimiting("super-admin-login")]
-    public async Task<IActionResult> Login(SuperAdminLogin request)
+    public async Task<IActionResult> Login(SuperAdminLogin request, CancellationToken cancellationToken)
     {
-        var account = authentication.Authenticate(request);
-        if (account is null) return Unauthorized(new { message = "Incorrect username or password." });
+        var signIn = await authentication.AuthenticateAsync(request, cancellationToken);
+        if (signIn is null) return Unauthorized(new { message = "Incorrect username or password." });
+        var account = signIn.Session;
         await HttpContext.SignInAsync(SuperAdminAuthentication.Scheme, new ClaimsPrincipal(new ClaimsIdentity([
-            new Claim(ClaimTypes.NameIdentifier, account.UserName),
-            new Claim(SuperAdminAuthentication.StampClaim, authentication.Stamp)
+            new Claim(ClaimTypes.NameIdentifier, account.SuperAdminID.ToString()),
+            new Claim(ClaimTypes.Name, account.UserName),
+            new Claim(ClaimTypes.Role, SuperAdminAuthentication.Role),
+            new Claim(SuperAdminAuthentication.StampClaim, signIn.Stamp)
         ], SuperAdminAuthentication.Scheme)), new AuthenticationProperties { IsPersistent = false, AllowRefresh = false });
         return Ok(account);
     }
 
     [HttpGet("session")]
-    public IActionResult Session() => Ok(authentication.Current);
+    public IActionResult Session() => Ok(SuperAdminAuthentication.CurrentSession(HttpContext));
 
     [AllowAnonymous, HttpPost("logout")]
     public async Task<IActionResult> Logout()
@@ -67,7 +70,7 @@ public sealed class SuperAdminController(SuperAdminAuthentication authentication
         try
         {
             await dashboard.SetVisibility(salonId, request.IsVisibleToCustomers!.Value, request.ExpectedVisible!.Value,
-                User.FindFirstValue(ClaimTypes.NameIdentifier)!, cancellationToken);
+                User.FindFirstValue(ClaimTypes.Name)!, cancellationToken);
             return NoContent();
         }
         catch (SqlException exception) when (exception.Number == 50044)

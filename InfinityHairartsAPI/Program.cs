@@ -66,11 +66,17 @@ builder.Services.AddScoped<ISalonOwnerAuthenticationService>(services => service
 builder.Services.AddSalonOwnerPersistentSignIn(builder.Configuration, builder.Environment);
 SuperAdminAuthentication.Register(builder.Services);
 builder.Services.AddScoped<SalonOwnerDashboardService>();
+builder.Services.AddScoped<SalonOwnerServicesReader>();
+builder.Services.AddScoped<SalonOwnerAppointmentsReader>();
 builder.Services.AddScoped<BookingQrService>();
+builder.Services.AddScoped<SalonTimingAvailability>();
 builder.Services.Configure<BookingReminderOptions>(builder.Configuration.GetSection("Notifications"));
 builder.Services.AddSingleton<NotificationRepository>();
 builder.Services.AddSingleton<FirebasePushNotificationSender>();
 builder.Services.AddHostedService<BookingReminderWorker>();
+builder.Services.AddSingleton<OwnerBookingNotificationStore>();
+builder.Services.AddSingleton<IOwnerBookingPushSender>(services => services.GetRequiredService<FirebasePushNotificationSender>());
+builder.Services.AddHostedService<OwnerBookingPushWorker>();
 
 builder.Services.AddDistributedMemoryCache();
 builder.Services.AddMemoryCache();

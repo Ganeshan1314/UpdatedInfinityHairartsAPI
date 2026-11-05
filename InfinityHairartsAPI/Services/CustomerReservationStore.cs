@@ -117,6 +117,8 @@ public sealed class CustomerReservationStore(IConfiguration configuration)
 				{
 					return Finish("Booking Confirmed");
 				}
+				if (!remove && !SalonTimingAvailability.IsTimeAllowed(db, tx, reservationDraft.SalonMasterID, request.TimeAllocationID))
+					return Finish("Invalid Time");
 				if (request.ExpectedVersion.HasValue && request.ExpectedVersion != reservationDraft.Version)
 				{
 					bool flag = (remove ? reservationDraft.Selections.All((ReservedTime s) => s.Id != request.TimeAllocationID) : (reservationDraft.Selections.Count == 1 && reservationDraft.Selections[0].Id == request.TimeAllocationID));
@@ -218,6 +220,8 @@ public sealed class CustomerReservationStore(IConfiguration configuration)
 		Lock(sqlConnection, sqlTransaction, write: false);
 		ReservationDraft reservationDraft = ReadDraft(sqlConnection, sqlTransaction, customer);
 		string text = ((Matches(reservationDraft, request) && !reservationDraft.Confirmed) ? "Success" : "Selection Changed");
+		if (text == "Success" && !SalonTimingAvailability.IsTimeAllowed(sqlConnection, sqlTransaction,
+			reservationDraft.SalonMasterID, reservationDraft.Selections[0].Id)) text = "Time Slot Unavailable";
 		sqlTransaction.Commit();
 		return new ReservationReply(text, Guid.Empty, (text == "Success") ? "Completed" : "", reservationDraft);
 	}
@@ -258,7 +262,9 @@ public sealed class CustomerReservationStore(IConfiguration configuration)
 				{
 					return Finish("Selection Changed");
 				}
-				if (reservationDraft.Selections.Count != 1 || Conflicts(db, tx, reservationDraft, reservationDraft.Selections[0].Id))
+				if (reservationDraft.Selections.Count != 1
+					|| !SalonTimingAvailability.IsTimeAllowed(db, tx, reservationDraft.SalonMasterID, reservationDraft.Selections[0].Id)
+					|| Conflicts(db, tx, reservationDraft, reservationDraft.Selections[0].Id))
 				{
 					return Finish("Time Slot Unavailable");
 				}

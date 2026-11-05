@@ -830,7 +830,7 @@ namespace InfinityHairartsAPI.Services
         }
         public Tuple<string, List<Dictionary<string, object>>, int, List<Dictionary<string, object>>, List<Dictionary<string, object>>> getSeatTimeAllocation() => getSeatTimeAllocation(null);
 
-        public Tuple<string, List<Dictionary<string, object>>, int, List<Dictionary<string, object>>, List<Dictionary<string, object>>> getSeatTimeAllocation(DateTime? requestedBookingDate)
+        public Tuple<string, List<Dictionary<string, object>>, int, List<Dictionary<string, object>>, List<Dictionary<string, object>>> getSeatTimeAllocation(DateTime? requestedBookingDate, Guid? requestedSalonID = null)
         {
             string Message = string.Empty;
             DataTable DT = new DataTable();
@@ -872,6 +872,17 @@ namespace InfinityHairartsAPI.Services
                     var Reader = con.ExecuteReader("getSeatTimeAllocation", commandType: CommandType.StoredProcedure, commandTimeout: 0);
                     DT = new DataTable();
                     DT.Load(Reader);
+                    Reader.Close();
+                    var salonID = requestedSalonID ?? con.QueryFirstOrDefault<Guid?>(
+                        "SELECT TOP(1) SalonMasterID FROM dbo.SeatBookingDetails WHERE CustomerID=@CustomerID ORDER BY CreatedOn DESC,SeatBookingDetailsID",
+                        new { CustomerID });
+                    var allowedTimes = con.Query<Guid>("""
+                        SELECT a.TimeAllocationID FROM dbo.SalonBookableTime a
+                        JOIN dbo.SalonMaster s ON s.SalonMasterID=a.SalonMasterID AND s.IsActive=1
+                        WHERE a.SalonMasterID=@salonID
+                        """, new { salonID }).ToHashSet();
+                    foreach (var row in DT.AsEnumerable().ToArray())
+                        if (!allowedTimes.Contains((Guid)row["TimeAllocationID"])) DT.Rows.Remove(row);
                     DataColumn column = new DataColumn();
                     column.DataType = typeof(string);
                     column.ColumnName = "EnableDisable";

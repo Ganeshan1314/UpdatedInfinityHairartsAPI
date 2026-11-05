@@ -2,6 +2,8 @@
 using Microsoft.AspNetCore.Mvc;
 using InfinityHairartsAPI.Modals;
 using Microsoft.Data.SqlClient;
+using System.ComponentModel.DataAnnotations;
+using Microsoft.AspNetCore.Mvc.ModelBinding;
 
 namespace InfinityHairartsAPI.Controllers
 {
@@ -113,11 +115,25 @@ namespace InfinityHairartsAPI.Controllers
         }
 
         [HttpPost("logout")]
-        public async Task<IActionResult> Logout()
+        public async Task<IActionResult> Logout([FromBody(EmptyBodyBehavior = EmptyBodyBehavior.Allow)] OwnerLogoutRequest? request,
+            CancellationToken cancellationToken)
         {
-            await _persistentSignIn.SignOutAsync(HttpContext);
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(request?.PushToken))
+                {
+                    await _persistentSignIn.RestoreSessionAsync(HttpContext);
+                    var owner = SalonOwnerPersistentSignIn.RestoredOwner(HttpContext);
+                    var notifications = HttpContext.RequestServices.GetService<OwnerBookingNotificationStore>();
+                    if (owner is not null && notifications is not null)
+                        await notifications.UnregisterAsync(owner.SalonOwnerID, request.PushToken, cancellationToken);
+                }
+            }
+            finally { await _persistentSignIn.SignOutAsync(HttpContext); }
             return NoContent();
         }
+
+        public sealed class OwnerLogoutRequest { [StringLength(512)] public string? PushToken { get; set; } }
 
         [HttpGet("dashboard")]
         [ResponseCache(Location = ResponseCacheLocation.None, NoStore = true)]
