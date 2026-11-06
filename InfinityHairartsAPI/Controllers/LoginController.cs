@@ -133,7 +133,7 @@ namespace InfinityHairartsAPI.Controllers
         [HttpGet("health")]
         public IActionResult Health()
         {
-            return Ok(new { status = "ok", apiContract = "mobile-login-reservations-v1", build = "updated-api-20261020" });
+            return Ok(new { status = "ok", apiContract = "mobile-login-reservations-v1", build = "updated-api-20261106-log-fixes" });
         }
     }
 }

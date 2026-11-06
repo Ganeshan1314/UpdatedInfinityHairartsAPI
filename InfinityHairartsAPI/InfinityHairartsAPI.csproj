@@ -18,6 +18,8 @@
 
   <ItemGroup>
     <Folder Include="CustomerImages\" />
+    <None Remove="Images\HairCutItemListImages\**\*" />
+    <Content Include="Images\HairCutItemListImages\**\*" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

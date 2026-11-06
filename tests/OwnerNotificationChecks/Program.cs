@@ -15,7 +15,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 var root = Directory.GetCurrentDirectory();
 while (!File.Exists(Path.Combine(root, "InfinityHairartsAPI.sln"))) root = Directory.GetParent(root)?.FullName ?? throw new Exception("Run from the API repository.");
-var source = new ConfigurationBuilder().AddJsonFile(args.FirstOrDefault() ?? Path.Combine(root, "InfinityHairartsAPI", "appsettings.json")).Build();
+var source = new ConfigurationBuilder().AddJsonFile(args.FirstOrDefault(arg => !arg.StartsWith("--")) ?? Path.Combine(root, "InfinityHairartsAPI", "appsettings.json")).Build();
 var settings = new SqlConnectionStringBuilder(source.GetConnectionString("dbconnection"));
 var host = settings.DataSource.Split('\\', ',')[0];
 if (!new[] { ".", "localhost", "127.0.0.1", "(localdb)", Environment.MachineName }.Contains(host, StringComparer.OrdinalIgnoreCase))
@@ -26,6 +26,9 @@ await using var master = new SqlConnection(settings.ConnectionString);
 await master.OpenAsync();
 var databaseName = "SalonexaOwnerNotifications_" + Guid.NewGuid().ToString("N");
 await master.ExecuteAsync($"CREATE DATABASE [{databaseName}]");
+await master.ExecuteAsync($"ALTER DATABASE [{databaseName}] SET ALLOW_SNAPSHOT_ISOLATION ON");
+if (args.Contains("--row-versioning"))
+    await master.ExecuteAsync($"ALTER DATABASE [{databaseName}] SET READ_COMMITTED_SNAPSHOT ON");
 settings.InitialCatalog = databaseName;
 await using var db = new SqlConnection(settings.ConnectionString);
 WebApplication? app = null;
@@ -106,6 +109,15 @@ try
     await store.RegisterAsync(owner, token, default);
     Check(await db.QuerySingleAsync<Guid>("SELECT BindingID FROM dbo.OwnerPushDevice WHERE DeviceToken=@token", new { token }) == beforeRefresh,
         "Refreshing registration preserves the current device binding and pending deliveries");
+    foreach (var isolation in new[] { IsolationLevel.ReadUncommitted, IsolationLevel.RepeatableRead, IsolationLevel.Serializable, IsolationLevel.Snapshot })
+    {
+        await using var transaction = (SqlTransaction)await db.BeginTransactionAsync(isolation);
+        var claim = (await db.QueryAsync<OwnerBookingPushDelivery>("dbo.ClaimOwnerBookingPush",
+            new { LeaseID = Guid.NewGuid() }, transaction, commandType: CommandType.StoredProcedure)).ToList();
+        Check(claim.Count == 4 && claim.All(delivery => delivery.LeaseID != Guid.Empty),
+            $"Claiming works with inherited {isolation} isolation (row versioning: {args.Contains("--row-versioning")})");
+        await transaction.RollbackAsync();
+    }
     var leased = await store.ClaimAsync(default);
     Check(leased.Count == 4 && leased.All(d => d.SalonMasterID == salon && d.DeviceToken != otherToken), "The worker leases only matching salon deliveries");
     Check((await store.ClaimAsync(default)).Count == 0, "Another worker cannot claim a live delivery lease");

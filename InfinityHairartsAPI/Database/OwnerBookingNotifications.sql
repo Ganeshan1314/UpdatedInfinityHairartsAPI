@@ -175,6 +175,9 @@ ALTER PROCEDURE dbo.ClaimOwnerBookingPush @LeaseID uniqueidentifier
 AS
 BEGIN
     SET NOCOUNT ON; SET XACT_ABORT ON;
+    -- READPAST requires a locking read even when the database uses row versioning.
+    -- Scope the isolation level to this procedure, independent of the caller/session.
+    SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
     DECLARE @Now datetime2(0) = SYSUTCDATETIME();
     -- Retired devices and reassigned salons must never receive queued customer details.
     UPDATE q SET Status = 'Cancelled' FROM dbo.OwnerBookingPushDelivery q
@@ -189,7 +192,7 @@ BEGIN
             AND (AttemptCount >= 8 OR CreatedUtc < DATEADD(hour, -24, @Now));
     DECLARE @Claimed TABLE(DeliveryID bigint);
     ;WITH Due AS (
-        SELECT TOP(20) * FROM dbo.OwnerBookingPushDelivery WITH(UPDLOCK, READPAST, ROWLOCK)
+        SELECT TOP(20) * FROM dbo.OwnerBookingPushDelivery WITH(UPDLOCK, READPAST, READCOMMITTEDLOCK)
         WHERE (Status = 'Pending' OR (Status = 'Sending' AND LeaseUntilUtc <= @Now))
             AND NextAttemptUtc <= @Now AND AttemptCount < 8 AND CreatedUtc >= DATEADD(hour, -24, @Now)
         ORDER BY DeliveryID

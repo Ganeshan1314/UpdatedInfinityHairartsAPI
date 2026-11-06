@@ -35,6 +35,7 @@ if (builder.Configuration.GetValue("FileLogging:Enabled", true))
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
+builder.Services.AddClientErrorReporting();
 
 // CORS
 builder.Services.AddCors(options =>
@@ -127,6 +128,7 @@ app.UseStaticFiles(new StaticFileOptions
     FileProvider = new PhysicalFileProvider(Path.Combine(app.Environment.ContentRootPath, "CustomerImages")),
     RequestPath = "/CustomerImages"
 });
+app.UseServiceImages();
 
 app.UseRouting();
 
