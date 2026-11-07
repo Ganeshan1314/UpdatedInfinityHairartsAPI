@@ -46,8 +46,8 @@ WebApplication? app = null;
 try
 {
     db.Execute("""
-        INSERT dbo.CustomerRegistration(CustomerID,MobileNo,FirstName,CreatedOn,CreatedBy,IsDeleted)
-        VALUES(@customer,@mobile,'Booking compatibility fixture',GETDATE(),@customer,0);
+        INSERT dbo.CustomerRegistration(CustomerID,MobileNo,FirstName,GeneralAddress,CreatedOn,CreatedBy,IsDeleted)
+        VALUES(@customer,@mobile,'Booking compatibility fixture','Local fixture',GETDATE(),@customer,0);
         INSERT dbo.CustomerRegistration(CustomerID,FirstName,CreatedOn,CreatedBy,IsDeleted)
         VALUES(@other,'Booking conflict fixture',GETDATE(),@other,0);
         INSERT dbo.LocationMaster(LocationMasterID,LocationName,IsActive,DisplayOrder,CreatedUtc)
@@ -65,7 +65,7 @@ try
     builder.Services.AddControllers().AddApplicationPart(typeof(LoginController).Assembly);
     builder.Services.AddHttpContextAccessor();
     builder.Services.AddScoped<LoginService>();
-    builder.Services.AddScoped<LocationService>();
+    builder.Services.AddLocationCatalog();
     builder.Services.AddMemoryCache();
     builder.Services.AddSingleton<CustomerSessionRegistry>();
     builder.Services.AddDistributedMemoryCache();
@@ -99,7 +99,7 @@ try
     using (var plain = new HttpClient { BaseAddress = new Uri(address) })
     using (var response = await plain.PostAsJsonAsync("/api/Login/customerLoginButtomClick", new { MobileNo = mobile }))
         Check(response.StatusCode == HttpStatusCode.BadRequest, "Customer mutations require the application request header");
-    var login = await Post("/api/Login/customerLoginButtomClick", new { MobileNo = mobile, Address = "Local fixture" });
+    var login = await Post("/api/Login/customerLoginButtomClick", new { MobileNo = mobile, Address = "Stale cached address" });
     Check(login.Status == HttpStatusCode.OK && login.Body.GetProperty("item1").GetString() == "Success", "Phone-number-only login succeeds against SQL without OTP");
     Check((await Get("/api/Login/session")).Status == HttpStatusCode.OK, "Login creates a restorable authenticated customer session");
     Check((await Post("/api/Login/customerLoginButtomClick", new { MobileNo = mobile })).Status == HttpStatusCode.OK,

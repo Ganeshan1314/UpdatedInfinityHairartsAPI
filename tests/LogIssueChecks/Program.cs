@@ -86,7 +86,7 @@ try
     builder.Services.AddSingleton<ISalonOwnerAuthenticationService>(new FixtureOwners(owner, salon));
     builder.Services.AddSalonOwnerPersistentSignIn(builder.Configuration, builder.Environment);
     builder.Services.AddDataProtection().UseEphemeralDataProtectionProvider();
-    builder.Services.AddScoped<LocationService>();
+    builder.Services.AddLocationCatalog();
     app = builder.Build();
     app.Use((context, next) => { context.Request.Scheme = "https"; return next(context); });
     app.UseServiceImages();

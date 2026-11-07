@@ -2,6 +2,9 @@
 using InfinityHairartsAPI.Modals;
 using Microsoft.AspNetCore.Mvc;
 using static InfinityHairartsAPI.Modals.LoginModal;
+using System.Diagnostics;
+using System.Globalization;
+using Microsoft.Data.SqlClient;
 
 namespace InfinityHairartsAPI.Controllers
 {
@@ -11,10 +14,12 @@ namespace InfinityHairartsAPI.Controllers
     public class LoginController : ControllerBase
     {
         private readonly LoginService _loginservice;
+        private readonly ILogger<LoginController> _logger;
 
-        public LoginController(LoginService loginservice)
+        public LoginController(LoginService loginservice, ILogger<LoginController>? logger = null)
         {
             _loginservice = loginservice;
+            _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<LoginController>.Instance;
         }
 
         [HttpPost("insertUserRegistration")]
@@ -46,15 +51,23 @@ namespace InfinityHairartsAPI.Controllers
 				message = "Enter a valid mobile number."
 			});
 		}
-		registry.Revoke(base.HttpContext.Session);
-		CustomerSession.Clear(base.HttpContext.Session);
+		var clock = Stopwatch.StartNew();
+		using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
+		deadline.CancelAfter(TimeSpan.FromSeconds(8));
+		var sessionLoaded = false;
+		var authenticated = false;
+		var outcome = "failed";
 		try
 		{
-			Tuple<string, List<Dictionary<string, object>>> result = _loginservice.customerLoginButtomClick(new LoginModal.CustomerLoginRequest
+			await HttpContext.Session.LoadAsync(deadline.Token);
+			sessionLoaded = true;
+			registry.Revoke(HttpContext.Session);
+			CustomerSession.Clear(HttpContext.Session);
+			Tuple<string, List<Dictionary<string, object>>> result = await _loginservice.CustomerLoginAsync(new LoginModal.CustomerLoginRequest
 			{
 				MobileNo = text,
 				Address = modal.Address?.Trim()
-			});
+			}, deadline.Token);
 			if (result.Item1 != "Success" || !Guid.TryParse(base.HttpContext.Session.GetString("CustomerID"), out var result2) || result2 == Guid.Empty)
 			{
 				CustomerSession.Clear(base.HttpContext.Session);
@@ -64,17 +77,38 @@ namespace InfinityHairartsAPI.Controllers
 				});
 			}
 			base.HttpContext.Session.SetString("CustomerAuthToken", registry.Create(result2));
-			await base.HttpContext.Session.CommitAsync(token);
+			await base.HttpContext.Session.CommitAsync(deadline.Token);
+			deadline.Token.ThrowIfCancellationRequested();
+			authenticated = true;
+			outcome = "success";
 			return Ok(result);
+		}
+		catch (OperationCanceledException) when (!token.IsCancellationRequested)
+		{
+			outcome = "timeout";
+			return StatusCode(503, new { message = "Sign-in is taking too long. Please try again." });
 		}
 		catch (Exception ex) when (!(ex is OperationCanceledException))
 		{
-			registry.Revoke(base.HttpContext.Session);
-			CustomerSession.Clear(base.HttpContext.Session);
+			outcome = ex is SqlException { Number: -2 } ? "sql-timeout" : "failed";
+			_logger.LogWarning("Customer login failed: ErrorType={ErrorType} SqlErrorNumber={SqlErrorNumber} TraceId={TraceId}",
+				ex.GetType().Name, (ex as SqlException)?.Number, HttpContext.TraceIdentifier);
 			return StatusCode(503, new
 			{
 				message = "Sign-in is temporarily unavailable."
 			});
+		}
+		finally
+		{
+			if (sessionLoaded && !authenticated)
+			{
+				registry.Revoke(HttpContext.Session);
+				CustomerSession.Clear(HttpContext.Session);
+			}
+			var elapsedMs = clock.Elapsed.TotalMilliseconds;
+			Response.Headers["Server-Timing"] = "customer-login;dur=" + elapsedMs.ToString("F1", CultureInfo.InvariantCulture);
+			_logger.LogInformation("Customer login API timing: Outcome={Outcome} TotalMs={TotalMs:F1} TraceId={TraceId}",
+				outcome, elapsedMs, HttpContext.TraceIdentifier);
 		}
 	}
 

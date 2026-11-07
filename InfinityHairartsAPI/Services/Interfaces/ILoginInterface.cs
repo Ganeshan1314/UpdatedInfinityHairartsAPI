@@ -7,7 +7,7 @@ namespace InfinityHairartsAPI.Services.Interfaces
         Tuple<string> CheckUserLogin(string MobileNo);
         Tuple<string, List<Dictionary<string, object>>> checkCustomerMobileNumberExist(getaddressModal modal);
         Tuple<List<Dictionary<string, object>>, string> getEmployeeDetails();
-        Tuple<string, List<Dictionary<string, object>>> customerLoginButtomClick(CustomerLoginRequest modal);
+        Task<Tuple<string, List<Dictionary<string, object>>>> CustomerLoginAsync(CustomerLoginRequest modal, CancellationToken cancellationToken = default);
         
     }
 }

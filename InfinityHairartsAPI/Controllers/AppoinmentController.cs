@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using InfinityHairartsAPI.Modals;
 using InfinityHairartsAPI.Services;
 using Microsoft.AspNetCore.Http;
@@ -31,9 +32,15 @@ public class AppoinmentController : ControllerBase
 				message = "Please choose an available booking date."
 			});
 		}
+		// The saved draft is independent of the availability queries. Read the
+		// customer from the session here, then fetch the draft on its own
+		// connection while the availability queries run.
+		Guid customerId = _appoinmentService.CustomerID();
+		Task<ReservationDraft?> draftTask = Task.Run(() => _appoinmentService.ReservationStore().GetDraft(customerId));
 		Tuple<string, List<Dictionary<string, object>>, int, List<Dictionary<string, object>>, List<Dictionary<string, object>>> seatTimeAllocation = _appoinmentService.getSeatTimeAllocation(bookingDate, salonMasterID);
 		if (seatTimeAllocation.Item1 != "Success")
 		{
+			_ = draftTask.ContinueWith(t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted);
 			return new JsonResult(seatTimeAllocation);
 		}
 		try
@@ -46,7 +53,7 @@ public class AppoinmentController : ControllerBase
 				Item4 = seatTimeAllocation.Item4,
 				Item5 = seatTimeAllocation.Item5,
 				OccupiedTimesComplete = true,
-				Draft = _appoinmentService.ReservationStore().GetDraft(_appoinmentService.CustomerID())
+				Draft = draftTask.GetAwaiter().GetResult()
 			});
 		}
 		catch

@@ -75,7 +75,7 @@ try
     builder.WebHost.UseUrls("http://127.0.0.1:0");
     builder.Configuration.AddConfiguration(config);
     builder.Services.AddControllers().AddApplicationPart(typeof(LocationController).Assembly);
-    builder.Services.AddScoped<LocationService>();
+    builder.Services.AddLocationCatalog();
     builder.Services.AddDistributedMemoryCache();
     builder.Services.AddMemoryCache();
     builder.Services.AddSingleton<CustomerSessionRegistry>();

@@ -132,6 +132,21 @@ try
     var list = legacy.getSeatTimeAllocation(date, salon);
     Check(list.Item1 == "Success" && list.Item2.Count == 1 && (Guid)list.Item2[0]["TimeAllocationID"] == morning,
         "The customer availability response lists only the chosen salon's selected timings");
+    Check((string)list.Item5[0]["FullDate"] == date.ToString("yyyy-MM-dd"),
+        "A requested booking date is the first listed date, matching the returned times");
+    var firstOpen = legacy.getSeatTimeAllocation(null, salon);
+    var firstDay = DateTime.ParseExact((string)firstOpen.Item5[0]["FullDate"], "yyyy-MM-dd", null);
+    var fullBooking = Guid.NewGuid(); var fullCustomer = Guid.NewGuid();
+    await db.ExecuteAsync("""
+        INSERT dbo.SeatBookingDetails(SeatBookingDetailsID,CustomerID,SalonMasterID,BookingDate,SeatCount,BookingStatusMasterID) VALUES(@fullBooking,@fullCustomer,@salon,@firstDay,1,2);
+        INSERT dbo.CustomerTimeSelection(TimeSelectionID,CustomerID,SeatBookingDetailsID,TimeAllocationID) VALUES(NEWID(),@fullCustomer,@fullBooking,@morning);
+        """, new { fullBooking, fullCustomer, salon, firstDay, morning });
+    var nextOpen = legacy.getSeatTimeAllocation(null, salon);
+    var nextDay = DateTime.ParseExact((string)nextOpen.Item5[0]["FullDate"], "yyyy-MM-dd", null);
+    Check(nextDay > firstDay && nextDay.DayOfWeek != DayOfWeek.Friday
+        && nextOpen.Item2.Any(t => (Guid)t["TimeAllocationID"] == morning && (string)t["EnableDisable"] == "Enable"),
+        "When every open time on the first day is booked, the next day with a free time is offered");
+    await db.ExecuteAsync("DELETE dbo.CustomerTimeSelection WHERE SeatBookingDetailsID=@fullBooking; DELETE dbo.SeatBookingDetails WHERE SeatBookingDetailsID=@fullBooking;", new { fullBooking });
     var otherList = legacy.getSeatTimeAllocation(date, otherSalon);
     Check(otherList.Item2.Count == 1 && (Guid)otherList.Item2[0]["TimeAllocationID"] == unselected,
         "Switching salons changes the returned bookable timing list");

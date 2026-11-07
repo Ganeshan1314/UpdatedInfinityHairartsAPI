@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Caching.Memory;
 using Dapper;
 using InfinityHairartsAPI.Modals;
 using Newtonsoft.Json;
@@ -44,6 +45,9 @@ namespace InfinityHairartsAPI.Services
             _httpContextAccessor = httpContextAccessor;
             _configuration = configuration;
         }
+        private static readonly Microsoft.Extensions.Caching.Memory.MemoryCache SlotCache = new(new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions());
+        private static readonly TimeSpan SlotCacheTtl = TimeSpan.FromSeconds(20);
+
         public SqlConnection DBConnection()
         {
             var con = new SqlConnection(_configuration.GetConnectionString("dbconnection"));
@@ -869,18 +873,32 @@ namespace InfinityHairartsAPI.Services
                 }
                 using (con = DBConnection())
                 {
-                    var Reader = con.ExecuteReader("getSeatTimeAllocation", commandType: CommandType.StoredProcedure, commandTimeout: 0);
-                    DT = new DataTable();
-                    DT.Load(Reader);
-                    Reader.Close();
+                    // The slot list and each salon's bookable times change rarely, so
+                    // reuse them briefly. Cached copies are cloned because the code
+                    // below removes rows and adds columns.
+                    if (!SlotCache.TryGetValue("slots", out DataTable? cachedSlots) || cachedSlots == null)
+                    {
+                        var Reader = con.ExecuteReader("getSeatTimeAllocation", commandType: CommandType.StoredProcedure, commandTimeout: 0);
+                        cachedSlots = new DataTable();
+                        cachedSlots.Load(Reader);
+                        Reader.Close();
+                        SlotCache.Set("slots", cachedSlots, SlotCacheTtl);
+                    }
+                    DT = cachedSlots.Copy();
                     var salonID = requestedSalonID ?? con.QueryFirstOrDefault<Guid?>(
                         "SELECT TOP(1) SalonMasterID FROM dbo.SeatBookingDetails WHERE CustomerID=@CustomerID ORDER BY CreatedOn DESC,SeatBookingDetailsID",
                         new { CustomerID });
-                    var allowedTimes = con.Query<Guid>("""
-                        SELECT a.TimeAllocationID FROM dbo.SalonBookableTime a
-                        JOIN dbo.SalonMaster s ON s.SalonMasterID=a.SalonMasterID AND s.IsActive=1
-                        WHERE a.SalonMasterID=@salonID
-                        """, new { salonID }).ToHashSet();
+                    var allowedKey = "allowed:" + salonID;
+                    if (!SlotCache.TryGetValue(allowedKey, out HashSet<Guid>? cachedAllowed) || cachedAllowed == null)
+                    {
+                        cachedAllowed = con.Query<Guid>("""
+                            SELECT a.TimeAllocationID FROM dbo.SalonBookableTime a
+                            JOIN dbo.SalonMaster s ON s.SalonMasterID=a.SalonMasterID AND s.IsActive=1
+                            WHERE a.SalonMasterID=@salonID
+                            """, new { salonID }).ToHashSet();
+                        SlotCache.Set(allowedKey, cachedAllowed, SlotCacheTtl);
+                    }
+                    var allowedTimes = cachedAllowed;
                     foreach (var row in DT.AsEnumerable().ToArray())
                         if (!allowedTimes.Contains((Guid)row["TimeAllocationID"])) DT.Rows.Remove(row);
                     DataColumn column = new DataColumn();
@@ -975,52 +993,83 @@ namespace InfinityHairartsAPI.Services
                     }
 
                     list = convertDatatabletoList(DT);
-                }
-                using (con = DBConnection())
-                {
-                    var Parameter = new DynamicParameters();
-                    Parameter.Add("CustomerID", CustomerID);
-                    var Reader = con.ExecuteReader("checkcustomerIDSeatBookingDetails", Parameter, commandType: CommandType.StoredProcedure, commandTimeout: 0);
+
+                    // Reuse this connection instead of opening another one.
+                    var seatParameter = new DynamicParameters();
+                    seatParameter.Add("CustomerID", CustomerID);
+                    var seatReader = con.ExecuteReader("checkcustomerIDSeatBookingDetails", seatParameter, commandType: CommandType.StoredProcedure, commandTimeout: 0);
                     DTSeatBookingDetails = new DataTable();
-                    DTSeatBookingDetails.Load(Reader);
+                    DTSeatBookingDetails.Load(seatReader);
                     if (DTSeatBookingDetails.Rows.Count > 0)
                     {
                         SeatBookingDetailsCount = Convert.ToInt32(DTSeatBookingDetails.Rows[0]["SeatCount"]);
                         _httpContextAccessor?.HttpContext?.Session?.SetString("SeatBookingDetailsID", DTSeatBookingDetails.Rows[0]["SeatBookingDetailsID"].ToString());
-                        //HttpContext.Current.Session["SeatBookingDetailsID"] = new Guid(DTSeatBookingDetails.Rows[0]["SeatBookingDetailsID"].ToString());
                         SeatBookingDetailsID = new Guid(DTSeatBookingDetails.Rows[0]["SeatBookingDetailsID"].ToString());
                     }
                 }
-                // Fetch occupied IDs for this day only. Include the customer's
+                // Fetch occupied IDs for one day only. Include the customer's
                 // confirmed bookings so clients do not need full booking history.
                 // Match the reservation conflict rules, including billed bookings
                 // and the ten-minute hold, while preserving the editable draft.
-                using (con = DBConnection())
+                DataTable LoadOccupiedTimes(DateTime day)
                 {
-                    var occupied = con.ExecuteReader("""
-                        SELECT DISTINCT CT.TimeAllocationID
-                        FROM dbo.CustomerTimeSelection CT
-                        INNER JOIN dbo.SeatBookingDetails SB
-                            ON SB.SeatBookingDetailsID = CT.SeatBookingDetailsID
-                        WHERE SB.BookingDate >= @BookingDate
-                          AND SB.BookingDate < DATEADD(DAY, 1, @BookingDate)
-                          AND (SB.BookingStatusMasterID = 2 OR EXISTS
-                            (SELECT 1 FROM dbo.HairCut_Item_Bill_Master B
-                             WHERE B.SeatBookingDetailsID = SB.SeatBookingDetailsID
-                               AND ISNULL(B.IsDeleted, 0) = 0)
-                            OR (CT.CreatedOn >= DATEADD(MINUTE, -10, GETDATE())
-                                AND SB.SeatBookingDetailsID <> @CurrentSeatBookingDetailsID));
-                        """, new
+                    var table = new DataTable();
+                    using (con = DBConnection())
                     {
-                        BookingDate = Convert.ToDateTime(BookingDate).Date,
-                        CurrentSeatBookingDetailsID = SeatBookingDetailsID
-                    }, commandTimeout: 10);
-                    DTSelectedTimeAllocation.Load(occupied);
+                        var occupied = con.ExecuteReader("""
+                            SELECT DISTINCT CT.TimeAllocationID
+                            FROM dbo.CustomerTimeSelection CT
+                            INNER JOIN dbo.SeatBookingDetails SB
+                                ON SB.SeatBookingDetailsID = CT.SeatBookingDetailsID
+                            WHERE SB.BookingDate >= @BookingDate
+                              AND SB.BookingDate < DATEADD(DAY, 1, @BookingDate)
+                              AND (SB.BookingStatusMasterID = 2 OR EXISTS
+                                (SELECT 1 FROM dbo.HairCut_Item_Bill_Master B
+                                 WHERE B.SeatBookingDetailsID = SB.SeatBookingDetailsID
+                                   AND ISNULL(B.IsDeleted, 0) = 0)
+                                OR (CT.CreatedOn >= DATEADD(MINUTE, -10, GETDATE())
+                                    AND SB.SeatBookingDetailsID <> @CurrentSeatBookingDetailsID));
+                            """, new
+                        {
+                            BookingDate = day.Date,
+                            CurrentSeatBookingDetailsID = SeatBookingDetailsID
+                        }, commandTimeout: 10);
+                        table.Load(occupied);
+                    }
+                    return table;
                 }
-                var bookedIds = new HashSet<string>(
-                    DTSelectedTimeAllocation.AsEnumerable()
-                        .Select(row => row["TimeAllocationID"].ToString() ?? string.Empty),
+                HashSet<string> OccupiedIds(DataTable table) => new HashSet<string>(
+                    table.AsEnumerable().Select(row => row["TimeAllocationID"].ToString() ?? string.Empty),
                     StringComparer.OrdinalIgnoreCase);
+                bool IsBookableOnFutureDay(DataRow row) => Convert.ToBoolean(row["BookingAvailableStatus"])
+                    && CustomerBookingRules.TryReadSlotTime(row["FullTiming"], out _);
+                bool HasFreeTime(HashSet<string> occupiedIds, Func<DataRow, bool> isOpen) => DT.AsEnumerable()
+                    .Any(row => isOpen(row) && !occupiedIds.Contains(row["TimeAllocationID"].ToString() ?? string.Empty));
+
+                DTSelectedTimeAllocation = LoadOccupiedTimes(Convert.ToDateTime(BookingDate));
+                var bookedIds = OccupiedIds(DTSelectedTimeAllocation);
+                // Customers can only book the first listed day. When every open
+                // time on it is already booked or held by other customers, move
+                // to the next day that still has a free time instead of showing
+                // an empty list the customer cannot leave.
+                if (!requestedBookingDate.HasValue && DT.Rows.Count > 0
+                    && !HasFreeTime(bookedIds, row => row["EnableDisable"].ToString() == "Enable"))
+                {
+                    for (DateTime nextDay = Convert.ToDateTime(BookingDate).Date.AddDays(1);
+                         nextDay <= salonNow.Date.AddDays(5); nextDay = nextDay.AddDays(1))
+                    {
+                        if (nextDay.DayOfWeek == DayOfWeek.Friday) continue;
+                        var nextOccupied = LoadOccupiedTimes(nextDay);
+                        var nextBookedIds = OccupiedIds(nextOccupied);
+                        if (!HasFreeTime(nextBookedIds, IsBookableOnFutureDay)) continue;
+                        BookingDate = nextDay.ToString();
+                        foreach (DataRow row in DT.Rows)
+                            row["EnableDisable"] = IsBookableOnFutureDay(row) ? "Enable" : "Disable";
+                        DTSelectedTimeAllocation = nextOccupied;
+                        bookedIds = nextBookedIds;
+                        break;
+                    }
+                }
                 foreach (DataRow timeAllocation in DT.Rows)
                 {
                     if (bookedIds.Contains(timeAllocation["TimeAllocationID"].ToString() ?? string.Empty))
@@ -1047,12 +1096,14 @@ namespace InfinityHairartsAPI.Services
             DTdateValues.Columns.Add("Month",typeof(string));
             DTdateValues.Columns.Add("Year",typeof(string));
             DTdateValues.Columns.Add("FullDate",typeof(string));
+            // The app books only the first listed date, using the times returned
+            // above. Always start the list on the date those times belong to,
+            // including an explicitly requested date, so the two never disagree.
             DateTime firstDate = salonNow.Date;
-            if (salonNow > salonNow.Date.AddHours(18) || showTomorrowOnly)
-                firstDate = firstDate.AddDays(1);
-            if (!requestedBookingDate.HasValue && DateTime.TryParse(BookingDate, out var effectiveDate)
-                && effectiveDate.Date > firstDate)
+            if (DateTime.TryParse(BookingDate, out var effectiveDate))
                 firstDate = effectiveDate.Date;
+            else if (salonNow > salonNow.Date.AddHours(18) || showTomorrowOnly)
+                firstDate = firstDate.AddDays(1);
             for (int i = 0; i < 5; i++)
             {
                 DateTime date = firstDate.AddDays(i);

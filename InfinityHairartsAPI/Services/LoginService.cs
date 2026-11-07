@@ -4,6 +4,7 @@ using Dapper;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Data.SqlClient;
 using System.Data;
+using System.Diagnostics;
 using System.Net.Http;
 using Twilio;
 using Twilio.Http;
@@ -23,11 +24,13 @@ namespace InfinityHairartsAPI.Services
         private readonly IConfiguration _configuration;
         private readonly IWebHostEnvironment _environment;
         private readonly FirebaseSender _firebaseSender;
-        public LoginService(IHttpContextAccessor httpContextAccessor, IConfiguration configuration, IWebHostEnvironment environment)
+        private readonly ILogger<LoginService> _logger;
+        public LoginService(IHttpContextAccessor httpContextAccessor, IConfiguration configuration, IWebHostEnvironment environment, ILogger<LoginService>? logger = null)
         {
             _httpContextAccessor = httpContextAccessor;
             _configuration = configuration;
             _environment = environment;
+            _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<LoginService>.Instance;
 
             // Temporary: do nothing here
         }
@@ -114,85 +117,78 @@ namespace InfinityHairartsAPI.Services
 
         
 
-        public Tuple<string, List<Dictionary<string, object>>> customerLoginButtomClick(CustomerLoginRequest modal)
+        public async Task<Tuple<string, List<Dictionary<string, object>>>> CustomerLoginAsync(
+            CustomerLoginRequest modal, CancellationToken cancellationToken = default)
         {
-            string Message = string.Empty;
-            DataTable DT = new DataTable();
-            List<Dictionary<string, object>> list = new List<Dictionary<string, object>>();
-            string MobileNumberValidation = string.Empty;
-            Guid CustomerID = Guid.NewGuid();
-            string MobileNo = modal?.MobileNo?.Trim() ?? string.Empty;
-            string GeneralAddress = modal?.Address?.Trim() ?? string.Empty;
-            //await SendPushAsync("cnANRg9CQuOmvOZD0ckE65:APA91bFsFrYolfP9KDIDqwQjqcBxuj6uVAJJ113TP4ViTdemrVui-Z-xoiTgl5fGmqh-1P0l8hKYHZPXdHloDdZqjd1bLxWWAbadZgFKic8bslPr6TnXblo");
+            var mobileNo = modal?.MobileNo?.Trim() ?? string.Empty;
+            if (!CustomerMobileNumber.IsValid(mobileNo))
+                return Tuple.Create("Not Valid MobileNo", new List<Dictionary<string, object>>());
+
+            var clock = Stopwatch.StartNew();
+            double openMs = 0, lookupMs = 0, insertMs = 0;
+            double stageStartedMs = 0;
+            var stage = "connection";
+            var completed = false;
             try
             {
-                
-                if (MobileNo.Length == 10)
+                // Keep one connection for this request. The lookup matches the legacy
+                // procedure's soft-delete rule, but transfers only the customer ID.
+                await using var connection = new SqlConnection(_configuration.GetConnectionString("dbconnection"));
+                stageStartedMs = clock.Elapsed.TotalMilliseconds;
+                await connection.OpenAsync(cancellationToken);
+                openMs = clock.Elapsed.TotalMilliseconds - stageStartedMs;
+
+                stage = "lookup";
+                stageStartedMs = clock.Elapsed.TotalMilliseconds;
+                var parameters = new DynamicParameters();
+                parameters.Add("MobileNo", mobileNo, DbType.String, size: 25);
+                var customerId = await connection.QueryFirstOrDefaultAsync<Guid?>(new CommandDefinition(
+                    """
+                    SELECT TOP (1) CustomerID
+                    FROM dbo.CustomerRegistration
+                    WHERE MobileNo = @MobileNo AND (IsDeleted = 0 OR IsDeleted IS NULL)
+                    """, parameters, commandTimeout: 5, cancellationToken: cancellationToken));
+                lookupMs = clock.Elapsed.TotalMilliseconds - stageStartedMs;
+
+                if (!customerId.HasValue)
                 {
-                    //MobileNumberValidation = checkValidMobileNumber(MobileNo);
-                    MobileNumberValidation = "Valid";
-                    if (MobileNumberValidation == "Valid")
+                    stage = "insert";
+                    stageStartedMs = clock.Elapsed.TotalMilliseconds;
+                    customerId = Guid.NewGuid();
+                    await connection.ExecuteAsync(new CommandDefinition("customerLoginButtomClick", new
                     {
-
-                        using (con = DBConnection())
-                        {
-                            var Parameter = new DynamicParameters();
-                            Parameter.Add("MobileNo", MobileNo);
-                            var Reader = con.ExecuteReader("checkCustomerMobileNumberExist", Parameter, commandType: CommandType.StoredProcedure, commandTimeout: 0);
-                            DT.Load(Reader);
-                            if (DT.Rows.Count > 0)
-                            {
-                                //CustomerID = new Guid(Convert.ToString(DT.Rows[0]["CustomerID"]).Trim());
-                                CustomerID = DT.Rows[0].Field<Guid>("CustomerID");
-                            }
-                        }
-                        if (DT.Rows.Count == 0)
-                        {
-                            using (con = DBConnection())
-                            {
-                                var Parameter = new DynamicParameters();
-                                Parameter.Add("CustomerID", CustomerID);
-                                Parameter.Add("MobileNo", MobileNo);
-                                Parameter.Add("GeneralAddress", GeneralAddress);
-                                con.Execute("customerLoginButtomClick", Parameter, commandType: CommandType.StoredProcedure, commandTimeout: 0);
-                                Message = "Success";
-                                _httpContextAccessor.HttpContext?.Session.SetString("CustomerID", CustomerID.ToString());
-                                //HttpContext.Current.Session["CustomerID"] = CustomerID;
-                            }
-
-                        }
-                        else
-                        {
-                            // Automatic session restoration sends only the remembered mobile
-                            // number. An omitted address must preserve the saved profile.
-                            if (modal?.Address != null)
-                            {
-                                updateCustomerNameLocation(GeneralAddress, CustomerID);
-                            }
-                            Message = "Success";
-                            _httpContextAccessor.HttpContext?.Session.SetString("CustomerID", CustomerID.ToString());
-                            //HttpContext.Current.Session["CustomerID"] = CustomerID;
-                            
-                        }
-                    }
-                    else
-                    {
-                        Message = "Not Valid MobileNo";
-                        //HttpContext.Current.Session["CustomerID"] = CustomerID;
-                        _httpContextAccessor.HttpContext?.Session.SetString("CustomerID", CustomerID.ToString());
-                        list = new List<Dictionary<string, object>>();
-                    }
+                        CustomerID = customerId.Value,
+                        MobileNo = mobileNo,
+                        GeneralAddress = modal?.Address?.Trim() ?? string.Empty
+                    }, commandType: CommandType.StoredProcedure, commandTimeout: 5, cancellationToken: cancellationToken));
+                    insertMs = clock.Elapsed.TotalMilliseconds - stageStartedMs;
                 }
-            }
-            catch (Exception ex)
-            {
-                LogError log = new LogError();
-                log.Error(ex);
-                list = new List<Dictionary<string, object>>();
-                Message = "Error";
-            }
-            return Tuple.Create(Message, list);
 
+                // Sign-in never rewrites an existing customer's profile, including
+                // requests from older app versions that still supply an address.
+                cancellationToken.ThrowIfCancellationRequested();
+                if (customerId.Value == Guid.Empty)
+                    throw new InvalidOperationException("Customer identity is unavailable.");
+                _httpContextAccessor.HttpContext!.Session.SetString("CustomerID", customerId.Value.ToString());
+                completed = true;
+                return Tuple.Create("Success", new List<Dictionary<string, object>>());
+            }
+            finally
+            {
+                // Keep the elapsed duration of a failing/cancelled operation too.
+                if (!completed)
+                {
+                    var stageMs = clock.Elapsed.TotalMilliseconds - stageStartedMs;
+                    if (stage == "connection") openMs = stageMs;
+                    else if (stage == "lookup") lookupMs = stageMs;
+                    else if (stage == "insert") insertMs = stageMs;
+                }
+                // No request body, customer ID, address or SQL exception text is logged.
+                _logger.LogInformation(
+                    "Customer login database timing: Completed={Completed} Stage={Stage} OpenMs={OpenMs:F1} LookupMs={LookupMs:F1} InsertMs={InsertMs:F1} TotalMs={TotalMs:F1} TraceId={TraceId}",
+                    completed, stage, openMs, lookupMs, insertMs, clock.Elapsed.TotalMilliseconds,
+                    _httpContextAccessor.HttpContext?.TraceIdentifier);
+            }
         }
         
         public string updateCustomerNameLocation(string GeneralAddress, Guid CustomerID)

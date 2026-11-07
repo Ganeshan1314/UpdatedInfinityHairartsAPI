@@ -54,6 +54,7 @@ builder.Services.AddCors(options =>
             )
             .AllowAnyHeader()
             .AllowAnyMethod()
+            .SetPreflightMaxAge(TimeSpan.FromMinutes(10))
             .AllowCredentials();
     });
 });
@@ -61,7 +62,7 @@ builder.Services.AddCors(options =>
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddHttpClient();
 builder.Services.AddScoped<LoginService>();
-builder.Services.AddScoped<LocationService>();
+builder.Services.AddLocationCatalog();
 builder.Services.AddScoped<SalonOwnerAuthenticationService>();
 builder.Services.AddScoped<ISalonOwnerAuthenticationService>(services => services.GetRequiredService<SalonOwnerAuthenticationService>());
 builder.Services.AddSalonOwnerPersistentSignIn(builder.Configuration, builder.Environment);
