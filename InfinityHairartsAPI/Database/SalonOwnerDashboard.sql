@@ -3,6 +3,8 @@ GO
 
 IF COL_LENGTH(N'dbo.SeatBookingDetails', N'CompletionStatus') IS NULL
     THROW 50003, 'Run BookingQrWorkflow.sql before SalonOwnerDashboard.sql.', 1;
+IF OBJECT_ID(N'dbo.SalonOwnerServiceCatalogue', N'V') IS NULL OR OBJECT_ID(N'dbo.GetSalonOwnerServices', N'P') IS NULL
+    THROW 50003, 'Run SalonOwnerServices.sql before SalonOwnerDashboard.sql.', 1;
 GO
 
 IF OBJECT_ID(N'dbo.GetSalonOwnerDashboard', N'P') IS NULL
@@ -35,7 +37,7 @@ BEGIN
             JOIN dbo.SeatBookingDetails sb ON sb.SeatBookingDetailsID = b.SeatBookingDetailsID
             WHERE sb.SalonMasterID = @SalonID AND b.CreatedDate >= @RangeStart AND b.CreatedDate < DATEADD(day, 1, @RangeEnd) AND COALESCE(b.IsDeleted, 0) = 0),
         TotalCustomers = COUNT(DISTINCT sb.CustomerID),
-        ActiveServices = (SELECT COUNT(*) FROM dbo.SalonService WHERE SalonMasterID = @SalonID AND IsActive = 1
+        ActiveServices = (SELECT COUNT(*) FROM dbo.SalonOwnerServiceCatalogue WHERE SalonMasterID = @SalonID AND IsActive = 1
             AND CreatedUtc >= @ServiceStartUtc AND CreatedUtc < @ServiceEndUtc),
         UpcomingBookings = COUNT(CASE WHEN sb.BookingDate >= CONVERT(date, DATEADD(minute, 330, SYSUTCDATETIME()))
             AND sb.CompletionStatus = N'Pending' THEN 1 END)
@@ -84,8 +86,7 @@ BEGIN
     JOIN dbo.SalonMaster s ON s.SalonMasterID = o.SalonMasterID
     JOIN dbo.LocationMaster l ON l.LocationMasterID = s.LocationMasterID
     WHERE o.SalonOwnerID = @OwnerID AND o.SalonMasterID = @SalonID AND o.IsActive = 1 AND s.IsActive = 1;
-    SELECT SalonServiceID, ServiceName, Category, Price, DurationMinutes,
-        COALESCE(Description, N'') AS Description, COALESCE(ImagePath, N'') AS ImagePath, IsActive
-    FROM dbo.SalonService WHERE SalonMasterID = @SalonID ORDER BY IsActive DESC, ServiceName;
+    -- Same editable catalogue as GET /api/Admin/services (Database/SalonOwnerServices.sql).
+    EXEC dbo.GetSalonOwnerServices @OwnerID = @OwnerID, @SalonID = @SalonID;
 END;
 GO

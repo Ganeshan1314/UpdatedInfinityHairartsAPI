@@ -30,3 +30,5 @@ Validation: 21 SQL/HTTP regression checks passed using a disposable local databa
 isolation, inactive services, duplicate links, deleted haircut items, empty lists,
 database access revocation and missing-procedure errors. The API builds successfully.
 No hosted API deployment or application-database writes were performed.
+
+> **Superseded on 2026-11-07** by [owner-service-editing.md](owner-service-editing.md). `SalonOwnerServicesRead.sql` was replaced by `Database/SalonOwnerServices.sql`; do not rerun the read-only script.
