@@ -165,7 +165,45 @@ public class AppoinmentController : ControllerBase
 				message = "Select a valid time slot."
 			});
 		}
-		if (!TimeAllocationModal.SeatBookingDetailsID.HasValue || !TimeAllocationModal.ExpectedVersion.HasValue || !CustomerBookingRules.TryReadDate(TimeAllocationModal.BookingDate, out var _))
+		// First time choice: the app has no booking draft yet. Prepare it here, with the same
+		// procedure as insertupdateSeatBookingDetails, so one request does both steps.
+		var prepareFirst = !TimeAllocationModal.SeatBookingDetailsID.HasValue && !TimeAllocationModal.ExpectedVersion.HasValue;
+		if (prepareFirst)
+		{
+			if (!TimeAllocationModal.SalonMasterID.HasValue || TimeAllocationModal.SalonMasterID == Guid.Empty)
+			{
+				return BadRequest(new
+				{
+					message = "Select a valid salon."
+				});
+			}
+			if (!CustomerBookingRules.TryReadDate(TimeAllocationModal.BookingDate, out var bookingDate) || !CustomerBookingRules.IsAvailableDate(bookingDate, CustomerBookingRules.Today))
+			{
+				return BadRequest(new
+				{
+					message = "Please choose an available booking date."
+				});
+			}
+			var prepared = _appoinmentService.insertupdateSeatBookingDetails(1, bookingDate, TimeAllocationModal.SalonMasterID.Value);
+			if (prepared.Item1 != "Success")
+			{
+				return new JsonResult(new ReservationReply(prepared.Item1, timeAllocationID, "", null));
+			}
+			try
+			{
+				var draft = _appoinmentService.ReservationStore().GetDraft(_appoinmentService.CustomerID());
+				if (draft == null) return StatusCode(503, new { message = "Your prepared booking could not be confirmed. Please try again." });
+				TimeAllocationModal.SeatBookingDetailsID = draft.SeatBookingDetailsID;
+				TimeAllocationModal.ExpectedVersion = draft.Version;
+				TimeAllocationModal.BookingDate = draft.BookingDate;
+				TimeAllocationModal.SalonMasterID = draft.SalonMasterID;
+			}
+			catch
+			{
+				return StatusCode(503, new { message = "Your prepared booking could not be confirmed. Please try again." });
+			}
+		}
+		else if (!TimeAllocationModal.SeatBookingDetailsID.HasValue || !TimeAllocationModal.ExpectedVersion.HasValue || !CustomerBookingRules.TryReadDate(TimeAllocationModal.BookingDate, out var _))
 		{
 			return BadRequest(new
 			{

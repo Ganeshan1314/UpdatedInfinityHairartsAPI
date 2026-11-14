@@ -56,6 +56,7 @@ try
         VALUES(@salon,@location,'Booking compatibility fixture',1,9999,SYSUTCDATETIME(),1,1);
         INSERT dbo.TimeAllocation(TimeAllocationID,FullTiming,IsDeleted,CreatedDate,BookingAvailableStatus)
         VALUES(@slot,'19:00:00',0,GETDATE(),1);
+        INSERT dbo.SalonBookableTime(SalonMasterID,TimeAllocationID) VALUES(@salon,@slot);
         """, new { customer, mobile, other, salon, location, slot });
 
     var builder = WebApplication.CreateBuilder(new WebApplicationOptions { Args = [], EnvironmentName = "Development" });
@@ -185,6 +186,26 @@ try
     var replay = await Post("/api/Appoinment/insertCustomerTimeSelection", change);
     Check(replay.Body.GetProperty("item1").GetString() == "Success" && store.GetDraft(customer)!.Version == selectedDraft.Version,
         "Repeating the same save does not duplicate or change the selection");
+    // First time choice without a prepared booking: one request prepares the booking and saves the time.
+    db.Execute("DELETE dbo.CustomerTimeSelection WHERE SeatBookingDetailsID=@id", new { id = draft.SeatBookingDetailsID });
+    var firstChoice = await Post("/api/Appoinment/insertCustomerTimeSelection",
+        new insertCustomerTimeSelection { TimeAllocationID = slot, BookingDate = draft.BookingDate, SalonMasterID = salon });
+    var firstDraft = store.GetDraft(customer)!;
+    Check(firstChoice.Status == HttpStatusCode.OK && firstChoice.Body.GetProperty("item1").GetString() == "Success"
+        && firstDraft.SeatBookingDetailsID == draft.SeatBookingDetailsID && firstDraft.Selections.Single().Id == slot
+        && firstChoice.Body.GetProperty("draft").GetProperty("selections").EnumerateArray().Single().GetProperty("id").GetGuid() == slot
+        && firstChoice.Body.GetProperty("draft").GetProperty("version").GetInt64() == firstDraft.Version,
+        "A first time choice prepares the booking and saves the time in one request");
+    Check((await Post("/api/Appoinment/insertCustomerTimeSelection",
+        new insertCustomerTimeSelection { TimeAllocationID = slot, BookingDate = draft.BookingDate })).Status == HttpStatusCode.BadRequest,
+        "A first time choice requires a salon");
+    Check((await Post("/api/Appoinment/insertCustomerTimeSelection",
+        new insertCustomerTimeSelection { TimeAllocationID = slot, BookingDate = "2001-01-01", SalonMasterID = salon })).Status == HttpStatusCode.BadRequest,
+        "A first time choice requires an available date");
+    Check((await Post("/api/Appoinment/insertCustomerTimeSelection",
+        new insertCustomerTimeSelection { TimeAllocationID = slot, SeatBookingDetailsID = draft.SeatBookingDetailsID, BookingDate = draft.BookingDate, SalonMasterID = salon })).Status == HttpStatusCode.BadRequest,
+        "A partly supplied booking draft is still rejected instead of silently preparing a new booking");
+    selectedDraft = store.GetDraft(customer)!;
     var review = new ReviewTimeSelectionRequest { SeatBookingDetailsID = draft.SeatBookingDetailsID, BookingDate = draft.BookingDate,
         Version = selectedDraft.Version, TimeAllocationIDs = [slot] };
     var stale = new ReviewTimeSelectionRequest { SeatBookingDetailsID = draft.SeatBookingDetailsID, BookingDate = draft.BookingDate,
@@ -242,7 +263,9 @@ finally
         DELETE dbo.CustomerTimeSelection WHERE CustomerID IN (@customer,@other);
         DELETE dbo.SeatBookingDetails WHERE CustomerID IN (@customer,@other);
         DELETE dbo.CustomerRegistration WHERE CustomerID IN (@customer,@other);
+        DELETE dbo.SalonBookableTime WHERE SalonMasterID=@salon;
         DELETE dbo.TimeAllocation WHERE TimeAllocationID=@slot;
+        DELETE dbo.SalonTimingAvailability WHERE SalonMasterID=@salon;
         DELETE dbo.SalonMaster WHERE SalonMasterID=@salon;
         DELETE dbo.LocationMaster WHERE LocationMasterID=@location;
         """, new { bill, customer, other, slot, salon, location });

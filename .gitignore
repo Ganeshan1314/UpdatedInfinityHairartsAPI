@@ -11,3 +11,13 @@
 # Local application secrets and credentials
 InfinityHairartsAPI/appsettings.json
 InfinityHairartsAPI/infinity-hair-arts-firebase-adminsdk-*.json
+
+# Salonexa Admin API: local secrets and credentials
+SalonexaAdminAPI/appsettings.json
+SalonexaAdminAPI/appsettings.Development.json
+SalonexaAdminAPI/*firebase-adminsdk-*.json
+SalonexaAdminAPI/firebase-service-account.json
+SalonexaAdminAPI/Logs/
+SalonexaAdminAPI/PublishAdminAPI/
+SalonexaAdminAPI/SalonImages/
+SalonexaAdminAPI/PublishAdminAPI-*.zip
