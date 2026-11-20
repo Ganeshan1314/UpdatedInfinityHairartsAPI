@@ -11,6 +11,12 @@ public sealed class SessionTimeoutAttribute : ActionFilterAttribute
 {
     public override void OnActionExecuting(ActionExecutingContext context)
     {
+        // Public catalog actions opt out explicitly with [AllowAnonymous].
+        if (context.ActionDescriptor.EndpointMetadata.OfType<Microsoft.AspNetCore.Authorization.IAllowAnonymous>().Any())
+        {
+            return;
+        }
+
         var customerId = context.HttpContext.Session.GetString("CustomerID");
         if (Guid.TryParse(customerId, out _))
         {

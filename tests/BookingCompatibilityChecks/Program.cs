@@ -45,6 +45,8 @@ void Check(bool condition, string description)
 WebApplication? app = null;
 try
 {
+    // The customer slot list reads the per-date timing tables; apply the (rerunnable) migration first.
+    db.Execute(File.ReadAllText(Path.Combine(Path.GetDirectoryName(Path.GetFullPath(configurationPath))!, "Database", "SalonTimingAvailability.sql")));
     db.Execute("""
         INSERT dbo.CustomerRegistration(CustomerID,MobileNo,FirstName,GeneralAddress,CreatedOn,CreatedBy,IsDeleted)
         VALUES(@customer,@mobile,'Booking compatibility fixture','Local fixture',GETDATE(),@customer,0);

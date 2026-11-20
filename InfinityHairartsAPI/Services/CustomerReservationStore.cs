@@ -79,6 +79,10 @@ public sealed class CustomerReservationStore(IConfiguration configuration)
 		return result;
 	}
 
+	// The salon's times for the draft's own date (a date can have its own times); an unreadable date is not allowed.
+	private static bool TimeAllowed(SqlConnection db, SqlTransaction tx, ReservationDraft draft, Guid slot) =>
+		CustomerBookingRules.TryReadDate(draft.BookingDate, out var day) && SalonTimingAvailability.IsTimeAllowed(db, tx, draft.SalonMasterID, slot, day);
+
 	private static bool Conflicts(SqlConnection db, SqlTransaction tx, ReservationDraft draft, Guid slot)
 	{
 		return db.ExecuteScalar<int>("SELECT COUNT(*) FROM dbo.CustomerTimeSelection c\nJOIN dbo.SeatBookingDetails s ON s.SeatBookingDetailsID=c.SeatBookingDetailsID\nWHERE c.TimeAllocationID=@slot AND s.BookingDate=@date AND s.SeatBookingDetailsID<>@id\n  AND (s.BookingStatusMasterID=2 OR c.CreatedOn>=DATEADD(MINUTE,-10,GETDATE()) OR EXISTS\n    (SELECT 1 FROM dbo.HairCut_Item_Bill_Master b WHERE b.SeatBookingDetailsID=s.SeatBookingDetailsID\n     AND ISNULL(b.IsDeleted,0)=0));", new
@@ -117,7 +121,7 @@ public sealed class CustomerReservationStore(IConfiguration configuration)
 				{
 					return Finish("Booking Confirmed");
 				}
-				if (!remove && !SalonTimingAvailability.IsTimeAllowed(db, tx, reservationDraft.SalonMasterID, request.TimeAllocationID))
+				if (!remove && CustomerBookingRules.TryReadDate(reservationDraft.BookingDate, out _) && !TimeAllowed(db, tx, reservationDraft, request.TimeAllocationID))
 					return Finish("Invalid Time");
 				if (request.ExpectedVersion.HasValue && request.ExpectedVersion != reservationDraft.Version)
 				{
@@ -220,8 +224,7 @@ public sealed class CustomerReservationStore(IConfiguration configuration)
 		Lock(sqlConnection, sqlTransaction, write: false);
 		ReservationDraft reservationDraft = ReadDraft(sqlConnection, sqlTransaction, customer);
 		string text = ((Matches(reservationDraft, request) && !reservationDraft.Confirmed) ? "Success" : "Selection Changed");
-		if (text == "Success" && !SalonTimingAvailability.IsTimeAllowed(sqlConnection, sqlTransaction,
-			reservationDraft.SalonMasterID, reservationDraft.Selections[0].Id)) text = "Time Slot Unavailable";
+		if (text == "Success" && !TimeAllowed(sqlConnection, sqlTransaction, reservationDraft, reservationDraft.Selections[0].Id)) text = "Time Slot Unavailable";
 		sqlTransaction.Commit();
 		return new ReservationReply(text, Guid.Empty, (text == "Success") ? "Completed" : "", reservationDraft);
 	}
@@ -263,7 +266,7 @@ public sealed class CustomerReservationStore(IConfiguration configuration)
 					return Finish("Selection Changed");
 				}
 				if (reservationDraft.Selections.Count != 1
-					|| !SalonTimingAvailability.IsTimeAllowed(db, tx, reservationDraft.SalonMasterID, reservationDraft.Selections[0].Id)
+					|| !TimeAllowed(db, tx, reservationDraft, reservationDraft.Selections[0].Id)
 					|| Conflicts(db, tx, reservationDraft, reservationDraft.Selections[0].Id))
 				{
 					return Finish("Time Slot Unavailable");

@@ -33,6 +33,14 @@ if (builder.Configuration.GetValue("FileLogging:Enabled", true))
 }
 
 builder.Services.AddControllers();
+// Compress JSON responses. Large uncompressed responses (the service list, the appointment times)
+// were the ones lost between the server and Cloudflare; compressed they are several times smaller.
+builder.Services.AddResponseCompression(options =>
+{
+    options.EnableForHttps = true;
+    options.Providers.Add<Microsoft.AspNetCore.ResponseCompression.BrotliCompressionProvider>();
+    options.Providers.Add<Microsoft.AspNetCore.ResponseCompression.GzipCompressionProvider>();
+});
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddClientErrorReporting();
@@ -115,6 +123,7 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseMiddleware<GlobalExceptionLoggingMiddleware>();
+app.UseResponseCompression();
 
 app.UseSwagger();
 app.UseSwaggerUI();

@@ -164,10 +164,20 @@ namespace InfinityHairartsAPI.Controllers
             return Ok(_loginservice.getEmployeeDetails());
         }
 
+        // Identifies this running copy of the API. A changing instance id or a small
+        // uptime between calls shows the process restarting; several ids at once show
+        // more than one worker process answering.
+        private static readonly string InstanceId = Guid.NewGuid().ToString("N")[..8];
+        private static readonly DateTime StartedAtUtc = DateTime.UtcNow;
+
         [HttpGet("health")]
         public IActionResult Health()
         {
-            return Ok(new { status = "ok", apiContract = "mobile-login-reservations-v1", build = "updated-api-20261106-log-fixes" });
+            return Ok(new
+            {
+                status = "ok", apiContract = "mobile-login-reservations-v1", build = "updated-api-20261106-log-fixes",
+                instance = InstanceId, uptimeSeconds = (int)(DateTime.UtcNow - StartedAtUtc).TotalSeconds
+            });
         }
     }
 }

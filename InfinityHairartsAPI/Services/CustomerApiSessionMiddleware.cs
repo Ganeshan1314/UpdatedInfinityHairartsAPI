@@ -24,7 +24,11 @@ public sealed class CustomerApiSessionMiddleware(RequestDelegate next)
                 await context.Response.WriteAsJsonAsync(new { message = "Use the application to submit this request." });
                 return;
             }
-            if ((appointment || PrivateLoginRoutes.Contains(remaining.Value?.TrimEnd('/') ?? ""))
+            // The category filter returns the same public service catalog shown before
+            // sign-in, so it must not depend on (or wait for) a customer session.
+            var publicCatalog = request.Path.Equals("/api/Appoinment/filterHariCutItemGroupMaster",
+                StringComparison.OrdinalIgnoreCase);
+            if (!publicCatalog && (appointment || PrivateLoginRoutes.Contains(remaining.Value?.TrimEnd('/') ?? ""))
                 && (!Guid.TryParse(context.Session.GetString("CustomerID"), out var customer)
                     || customer == Guid.Empty || !registry.IsActive(context.Session, customer)))
             {

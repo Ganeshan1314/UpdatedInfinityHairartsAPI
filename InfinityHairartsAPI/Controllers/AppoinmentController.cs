@@ -254,6 +254,8 @@ public class AppoinmentController : ControllerBase
 		}
 	}
 
+	// Public service catalog by category: shown before sign-in, no customer session needed.
+	[Microsoft.AspNetCore.Authorization.AllowAnonymous]
 	[HttpPost("filterHariCutItemGroupMaster")]
 	public ActionResult filterHariCutItemGroupMaster([FromBody] AppoinmentModal.HairCutItemGroupMasterModal modal)
 	{

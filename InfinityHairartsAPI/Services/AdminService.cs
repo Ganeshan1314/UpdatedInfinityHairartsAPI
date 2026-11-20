@@ -297,7 +297,11 @@ namespace InfinityHairartsAPI.Services
             }
             return Tuple.Create(ReturnMessage);
         }
+        // Public catalog: served from memory and refreshed in the background so a slow
+        // database does not stall every customer (see PublicCatalogCache).
         public Tuple<string, List<Dictionary<string, object>>> GetListHairCutTpyes()
+            => PublicCatalogCache.GetOrLoad("services:all", LoadListHairCutTpyes, result => result.Item1 == "Success");
+        private Tuple<string, List<Dictionary<string, object>>> LoadListHairCutTpyes()
         {
             List<Dictionary<string, object>> ListGetListHairCutTpyes = new List<Dictionary<string, object>>();
             string Message = string.Empty;
@@ -310,15 +314,28 @@ namespace InfinityHairartsAPI.Services
                 int CountItemName = 0;
                 string AwsUpdateStatus = string.Empty;
                 string LocalFilePath = string.Empty;
-                con = DBConnection();
-                SqlCommand cmd = new SqlCommand();
-                cmd.CommandType = CommandType.StoredProcedure;
-                cmd.CommandTimeout = 0;
-                cmd.Connection = con;
-                cmd.CommandText = "getAllHairCut_Item_List";
-                SqlDataAdapter adp = new SqlDataAdapter(cmd);
-                DT = new DataTable();
-                adp.Fill(DT);
+                // The database can be briefly unreachable (idle/paused tier, dropped
+                // pooled connection). Retry before reporting an error to the app.
+                for (int attempt = 1; ; attempt++)
+                {
+                    try
+                    {
+                        using (SqlConnection serviceCon = DBConnection())
+                        using (SqlCommand cmd = new SqlCommand("getAllHairCut_Item_List", serviceCon))
+                        using (SqlDataAdapter adp = new SqlDataAdapter(cmd))
+                        {
+                            cmd.CommandType = CommandType.StoredProcedure;
+                            cmd.CommandTimeout = 30;
+                            DT = new DataTable();
+                            adp.Fill(DT);
+                        }
+                        break;
+                    }
+                    catch (SqlException) when (attempt < 3)
+                    {
+                        System.Threading.Thread.Sleep(500 * attempt);
+                    }
+                }
                 CountItemName = DT.Rows.Count;
                 string AWSFolderPath = string.Empty;
                 //string ShowCustomerImage = ConfigurationManager.AppSettings["ShowCustomerImage"];

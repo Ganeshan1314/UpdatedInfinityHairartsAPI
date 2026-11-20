@@ -47,6 +47,14 @@ namespace InfinityHairartsAPI.Services
         }
         private static readonly Microsoft.Extensions.Caching.Memory.MemoryCache SlotCache = new(new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions());
         private static readonly TimeSpan SlotCacheTtl = TimeSpan.FromSeconds(20);
+        private sealed class DatedBookableTime { public DateTime BookingDate { get; set; } public Guid TimeAllocationID { get; set; } }
+        // A salon's daily times plus any per-date overrides (a date with an override uses only its own times).
+        private sealed class SalonBookableTimes(HashSet<Guid> daily, Dictionary<DateTime, HashSet<Guid>> byDate)
+        {
+            public bool HasAnyTimes => daily.Count > 0 || byDate.Values.Any(times => times.Count > 0);
+            public bool IsAllowed(DateTime day, Guid timeId) =>
+                byDate.TryGetValue(day.Date, out var own) ? own.Contains(timeId) : daily.Contains(timeId);
+        }
 
         public SqlConnection DBConnection()
         {
@@ -106,7 +114,12 @@ namespace InfinityHairartsAPI.Services
             }
             return Tuple.Create(list, Message);
         }
+        // Public catalog: served from memory and refreshed in the background so a slow
+        // database does not stall every customer (see PublicCatalogCache).
         public Tuple<List<Dictionary<string, object>>, string> filterHariCutItemGroupMaster(Guid HairCutItemGroupMaster_ID)
+            => PublicCatalogCache.GetOrLoad("services:group:" + HairCutItemGroupMaster_ID,
+                () => LoadFilterHariCutItemGroupMaster(HairCutItemGroupMaster_ID), result => result.Item2 == "Success");
+        private Tuple<List<Dictionary<string, object>>, string> LoadFilterHariCutItemGroupMaster(Guid HairCutItemGroupMaster_ID)
         {
             List<Dictionary<string, object>> list = new List<Dictionary<string, object>>();
             Dictionary<string, object> dict = new Dictionary<string, object>();
@@ -119,7 +132,7 @@ namespace InfinityHairartsAPI.Services
                 {
                     var Parameter = new DynamicParameters();
                     Parameter.Add("HairCutItemGroupMaster_ID", HairCutItemGroupMaster_ID);
-                    var Reader = con.ExecuteReader("getHairCutItemGroupMaster", Parameter, commandType: CommandType.StoredProcedure, commandTimeout: 0);
+                    var Reader = con.ExecuteReader("getHairCutItemGroupMaster", Parameter, commandType: CommandType.StoredProcedure, commandTimeout: 20);
                     DT = new DataTable();
                     DT.Load(Reader);
                 }
@@ -131,7 +144,7 @@ namespace InfinityHairartsAPI.Services
                         con = DBConnection();
                         SqlCommand cmd = new SqlCommand();
                         cmd.CommandType = CommandType.StoredProcedure;
-                        cmd.CommandTimeout = 0;
+                        cmd.CommandTimeout = 20;
                         cmd.Connection = con;
                         cmd.CommandText = "getHairCut_Item_List";
                         SqlDataAdapter adp = new SqlDataAdapter(cmd);
@@ -155,7 +168,7 @@ namespace InfinityHairartsAPI.Services
                             {
                                 var Parameter = new DynamicParameters();
                                 Parameter.Add("HairCutItemGroupMaster_ID", HairCutItemGroupMaster_ID);
-                                var Reader = con.ExecuteReader("filterHariCutItemGroupMaster", Parameter, commandType: CommandType.StoredProcedure, commandTimeout: 0);
+                                var Reader = con.ExecuteReader("filterHariCutItemGroupMaster", Parameter, commandType: CommandType.StoredProcedure, commandTimeout: 20);
                                 DT = new DataTable();
                                 DT.Load(Reader);
                             }
@@ -169,7 +182,7 @@ namespace InfinityHairartsAPI.Services
                     con = DBConnection();
                     SqlCommand cmd = new SqlCommand();
                     cmd.CommandType = CommandType.StoredProcedure;
-                    cmd.CommandTimeout = 0;
+                    cmd.CommandTimeout = 20;
                     cmd.Connection = con;
                     cmd.CommandText = "getHairCut_Item_List";
                     SqlDataAdapter adp = new SqlDataAdapter(cmd);
@@ -863,6 +876,8 @@ namespace InfinityHairartsAPI.Services
                 Guid SeatBookingDetailsID = Guid.Empty;
                 bool BookingAvailableStatus;
                 string TodayBooking = string.Empty;
+                var allowedTimes = new SalonBookableTimes(new HashSet<Guid>(), new Dictionary<DateTime, HashSet<Guid>>());
+                bool AllowedOn(DateTime day, DataRow row) => allowedTimes.IsAllowed(day, (Guid)row["TimeAllocationID"]);
                 if (getSessionvalueCustomerID() != Guid.Empty)
                 {
                     CustomerID = getSessionvalueCustomerID();
@@ -888,19 +903,31 @@ namespace InfinityHairartsAPI.Services
                     var salonID = requestedSalonID ?? con.QueryFirstOrDefault<Guid?>(
                         "SELECT TOP(1) SalonMasterID FROM dbo.SeatBookingDetails WHERE CustomerID=@CustomerID ORDER BY CreatedOn DESC,SeatBookingDetailsID",
                         new { CustomerID });
-                    var allowedKey = "allowed:" + salonID;
-                    if (!SlotCache.TryGetValue(allowedKey, out HashSet<Guid>? cachedAllowed) || cachedAllowed == null)
+                    var allowedKey = "allowed-by-date:" + salonID;
+                    if (!SlotCache.TryGetValue(allowedKey, out SalonBookableTimes? cachedAllowed) || cachedAllowed == null)
                     {
-                        cachedAllowed = con.Query<Guid>("""
+                        var daily = con.Query<Guid>("""
                             SELECT a.TimeAllocationID FROM dbo.SalonBookableTime a
                             JOIN dbo.SalonMaster s ON s.SalonMasterID=a.SalonMasterID AND s.IsActive=1
                             WHERE a.SalonMasterID=@salonID
                             """, new { salonID }).ToHashSet();
+                        // A date with its own times (even none: closed) uses only those; other dates use the daily times.
+                        var byDate = new Dictionary<DateTime, HashSet<Guid>>();
+                        var firstDay = salonNow.Date;
+                        foreach (var day in con.Query<DateTime>("""
+                            SELECT o.BookingDate FROM dbo.SalonTimingDateOverride o
+                            JOIN dbo.SalonMaster s ON s.SalonMasterID=o.SalonMasterID AND s.IsActive=1
+                            WHERE o.SalonMasterID=@salonID AND o.BookingDate>=@firstDay
+                            """, new { salonID, firstDay })) byDate[day.Date] = new HashSet<Guid>();
+                        foreach (var dated in con.Query<DatedBookableTime>("""
+                            SELECT d.BookingDate, d.TimeAllocationID FROM dbo.SalonBookableTimeDate d
+                            WHERE d.SalonMasterID=@salonID AND d.BookingDate>=@firstDay
+                            """, new { salonID, firstDay }))
+                            if (byDate.TryGetValue(dated.BookingDate.Date, out var times)) times.Add(dated.TimeAllocationID);
+                        cachedAllowed = new SalonBookableTimes(daily, byDate);
                         SlotCache.Set(allowedKey, cachedAllowed, SlotCacheTtl);
                     }
-                    var allowedTimes = cachedAllowed;
-                    foreach (var row in DT.AsEnumerable().ToArray())
-                        if (!allowedTimes.Contains((Guid)row["TimeAllocationID"])) DT.Rows.Remove(row);
+                    allowedTimes = cachedAllowed;
                     DataColumn column = new DataColumn();
                     column.DataType = typeof(string);
                     column.ColumnName = "EnableDisable";
@@ -946,10 +973,12 @@ namespace InfinityHairartsAPI.Services
                         TodayBooking = requestedBookingDate.Value.Date == salonNow.Date ? "Not Completed" : "Completed";
                     }
                     currentTime = currentTime.Add(new TimeSpan(1, 30, 0));
+                    var bookingDay = Convert.ToDateTime(BookingDate).Date;
                     for (int i = 0; i < DT.Rows.Count; i++)
                     {
                         TimeSpan FullTiming;
-                        if (!CustomerBookingRules.TryReadSlotTime(DT.Rows[i]["FullTiming"], out FullTiming))
+                        if (!CustomerBookingRules.TryReadSlotTime(DT.Rows[i]["FullTiming"], out FullTiming)
+                            || !AllowedOn(bookingDay, DT.Rows[i]))
                         {
                             DT.Rows[i]["EnableDisable"] = "Disable";
                             continue;
@@ -984,10 +1013,12 @@ namespace InfinityHairartsAPI.Services
                         if (Convert.ToDateTime(BookingDate).DayOfWeek == DayOfWeek.Friday)
                             BookingDate = salonNow.Date.AddDays(2).ToString();
 
+                        var tomorrowDay = Convert.ToDateTime(BookingDate).Date;
                         for (int i = 0; i < DT.Rows.Count; i++)
                         {
                             BookingAvailableStatus = Convert.ToBoolean(DT.Rows[i]["BookingAvailableStatus"]);
                             DT.Rows[i]["EnableDisable"] = BookingAvailableStatus
+                                && AllowedOn(tomorrowDay, DT.Rows[i])
                                 && CustomerBookingRules.TryReadSlotTime(DT.Rows[i]["FullTiming"], out _) ? "Enable" : "Disable";
                         }
                     }
@@ -1041,7 +1072,8 @@ namespace InfinityHairartsAPI.Services
                 HashSet<string> OccupiedIds(DataTable table) => new HashSet<string>(
                     table.AsEnumerable().Select(row => row["TimeAllocationID"].ToString() ?? string.Empty),
                     StringComparer.OrdinalIgnoreCase);
-                bool IsBookableOnFutureDay(DataRow row) => Convert.ToBoolean(row["BookingAvailableStatus"])
+                bool IsBookableOnFutureDay(DateTime day, DataRow row) => Convert.ToBoolean(row["BookingAvailableStatus"])
+                    && AllowedOn(day, row)
                     && CustomerBookingRules.TryReadSlotTime(row["FullTiming"], out _);
                 bool HasFreeTime(HashSet<string> occupiedIds, Func<DataRow, bool> isOpen) => DT.AsEnumerable()
                     .Any(row => isOpen(row) && !occupiedIds.Contains(row["TimeAllocationID"].ToString() ?? string.Empty));
@@ -1052,7 +1084,7 @@ namespace InfinityHairartsAPI.Services
                 // time on it is already booked or held by other customers, move
                 // to the next day that still has a free time instead of showing
                 // an empty list the customer cannot leave.
-                if (!requestedBookingDate.HasValue && DT.Rows.Count > 0
+                if (!requestedBookingDate.HasValue && DT.Rows.Count > 0 && allowedTimes.HasAnyTimes
                     && !HasFreeTime(bookedIds, row => row["EnableDisable"].ToString() == "Enable"))
                 {
                     for (DateTime nextDay = Convert.ToDateTime(BookingDate).Date.AddDays(1);
@@ -1061,15 +1093,19 @@ namespace InfinityHairartsAPI.Services
                         if (nextDay.DayOfWeek == DayOfWeek.Friday) continue;
                         var nextOccupied = LoadOccupiedTimes(nextDay);
                         var nextBookedIds = OccupiedIds(nextOccupied);
-                        if (!HasFreeTime(nextBookedIds, IsBookableOnFutureDay)) continue;
+                        if (!HasFreeTime(nextBookedIds, row => IsBookableOnFutureDay(nextDay, row))) continue;
                         BookingDate = nextDay.ToString();
                         foreach (DataRow row in DT.Rows)
-                            row["EnableDisable"] = IsBookableOnFutureDay(row) ? "Enable" : "Disable";
+                            row["EnableDisable"] = IsBookableOnFutureDay(nextDay, row) ? "Enable" : "Disable";
                         DTSelectedTimeAllocation = nextOccupied;
                         bookedIds = nextBookedIds;
                         break;
                     }
                 }
+                // List only the times this salon offers on the date being shown.
+                var shownDay = Convert.ToDateTime(BookingDate).Date;
+                foreach (var row in DT.AsEnumerable().ToArray())
+                    if (!AllowedOn(shownDay, row)) DT.Rows.Remove(row);
                 foreach (DataRow timeAllocation in DT.Rows)
                 {
                     if (bookedIds.Contains(timeAllocation["TimeAllocationID"].ToString() ?? string.Empty))

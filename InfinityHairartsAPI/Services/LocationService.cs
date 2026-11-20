@@ -70,12 +70,24 @@ public sealed class LocationService
         return salons.ToList();
     }
 
-    public async Task<SalonDirectoryPage> GetDirectoryAsync(
+    public Task<SalonDirectoryPage> GetDirectoryAsync(
         string? search, string? cursor, int pageSize, CancellationToken cancellationToken)
     {
         var term = (search ?? "").Trim();
         if (term.Length > 100 || pageSize is < 1 or > 20)
             throw new ArgumentException("Search must be at most 100 characters and pageSize must be between 1 and 20.");
+        // Only the first browse page is shared; searches and later pages go to the database,
+        // so caller-supplied text can never grow the cache.
+        if (term.Length > 0 || cursor is not null)
+            return LoadDirectoryAsync(term, cursor, pageSize, cancellationToken);
+        // The load must not be tied to one caller's request, or a dropped client would fail the shared entry.
+        return PublicCatalogCache.GetOrLoadAsync($"salons:first:{pageSize}",
+            () => LoadDirectoryAsync(term, cursor, pageSize, CancellationToken.None));
+    }
+
+    private async Task<SalonDirectoryPage> LoadDirectoryAsync(
+        string term, string? cursor, int pageSize, CancellationToken cancellationToken)
+    {
 
         DirectoryCursor? after = null;
         if (cursor is not null)
