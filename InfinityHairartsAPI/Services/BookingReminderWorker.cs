@@ -7,6 +7,13 @@ public sealed class BookingReminderOptions
     public int MinutesBefore { get; set; } = 30;
     public int PollingIntervalSeconds { get; set; } = 60;
     public string TimeZoneId { get; set; } = "Asia/Kolkata";
+
+    /// <summary>
+    /// Off by default. When true, reminders are sent as data messages the customer app draws itself
+    /// so no arrival time shows next to them. Customers on an app version without that support
+    /// will not see reminders, so turn it on only after most customers have updated.
+    /// </summary>
+    public bool DrawReminderInApp { get; set; }
 }
 
 public sealed class BookingReminderWorker : BackgroundService
@@ -90,7 +97,8 @@ public sealed class BookingReminderWorker : BackgroundService
                 return;
             }
 
-            var result = await _sender.SendBookingReminderAsync(reminder, tokens, cancellationToken);
+            var result = await _sender.SendBookingReminderAsync(
+                reminder, tokens, cancellationToken, _options.DrawReminderInApp);
             await _repository.DeactivateTokensAsync(result.InvalidTokens, cancellationToken);
 
             if (result.SuccessCount > 0)

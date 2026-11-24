@@ -138,6 +138,11 @@ try
         "A requested booking date is the first listed date, matching the returned times");
     var firstOpen = legacy.getSeatTimeAllocation(null, salon);
     var firstDay = DateTime.ParseExact((string)firstOpen.Item5[0]["FullDate"], "yyyy-MM-dd", null);
+    var offered = firstOpen.Item5.Select(d => DateTime.ParseExact((string)d["FullDate"], "yyyy-MM-dd", null)).ToList();
+    Check(offered.Count == CustomerBookingRules.ListedDates && offered[0] == firstDay
+        && offered.All(d => d.DayOfWeek != DayOfWeek.Friday && CustomerBookingRules.IsAvailableDate(d, CustomerBookingRules.Today))
+        && offered.SequenceEqual(offered.OrderBy(d => d)) && offered.Distinct().Count() == offered.Count,
+        "Seven bookable dates are offered in order, none on a Friday, all inside the booking window");
     var fullBooking = Guid.NewGuid(); var fullCustomer = Guid.NewGuid();
     await db.ExecuteAsync("""
         INSERT dbo.SeatBookingDetails(SeatBookingDetailsID,CustomerID,SalonMasterID,BookingDate,SeatCount,BookingStatusMasterID) VALUES(@fullBooking,@fullCustomer,@salon,@firstDay,1,2);

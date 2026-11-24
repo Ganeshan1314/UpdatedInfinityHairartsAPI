@@ -61,10 +61,16 @@ public sealed class FirebasePushNotificationSender : IOwnerBookingPushSender
         }
     }
 
+    /// <param name="drawInApp">
+    /// When true the reminder is sent as a data message that the customer app draws itself, which
+    /// lets it leave out the arrival time Android prints next to a system-drawn notification.
+    /// Only turn this on once most customers have the app version that can draw it.
+    /// </param>
     public async Task<PushSendResult> SendBookingReminderAsync(
         BookingReminderCandidate reminder,
         IReadOnlyList<string> tokens,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool drawInApp = false)
     {
         var appointmentTime = reminder.AppointmentStartLocal.ToString("hh:mm tt", CultureInfo.InvariantCulture);
 
@@ -80,7 +86,8 @@ public sealed class FirebasePushNotificationSender : IOwnerBookingPushSender
                 ["appointmentStart"] = reminder.AppointmentStartLocal.ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture)
             },
             $"booking-{reminder.SeatBookingDetailsID:D}",
-            cancellationToken);
+            cancellationToken,
+            dataOnly: drawInApp);
     }
 
     public Task<PushSendResult> SendOwnerBookingAsync(OwnerBookingPushDelivery delivery, CancellationToken cancellationToken)
@@ -104,7 +111,8 @@ public sealed class FirebasePushNotificationSender : IOwnerBookingPushSender
         Dictionary<string, string> data,
         string tag,
         CancellationToken cancellationToken,
-        string channelId = "booking_reminders")
+        string channelId = "booking_reminders",
+        bool dataOnly = false)
     {
         if (_messaging is null)
         {
@@ -118,8 +126,24 @@ public sealed class FirebasePushNotificationSender : IOwnerBookingPushSender
         foreach (var tokenBatch in tokens.Chunk(500))
         {
             var batch = tokenBatch.ToArray();
-            var response = await _messaging.SendEachForMulticastAsync(
-                new MulticastMessage
+            var message = dataOnly
+                // Android: no notification block, so the app draws it (without the arrival time).
+                // iPhone: an Apple alert in the same message, since iOS cannot draw a data message.
+                ? new MulticastMessage
+                {
+                    Tokens = batch,
+                    Data = new Dictionary<string, string>(data) { ["title"] = title, ["body"] = body, ["tag"] = tag },
+                    Android = new AndroidConfig { Priority = Priority.High },
+                    Apns = new ApnsConfig
+                    {
+                        Aps = new Aps
+                        {
+                            Alert = new ApsAlert { Title = title, Body = body },
+                            Sound = "default"
+                        }
+                    }
+                }
+                : new MulticastMessage
                 {
                     Tokens = batch,
                     Notification = new Notification
@@ -138,8 +162,8 @@ public sealed class FirebasePushNotificationSender : IOwnerBookingPushSender
                             Tag = tag
                         }
                     }
-                },
-                cancellationToken);
+                };
+            var response = await _messaging.SendEachForMulticastAsync(message, cancellationToken);
 
             successCount += response.SuccessCount;
             for (var index = 0; index < response.Responses.Count; index++)

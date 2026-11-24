@@ -972,7 +972,6 @@ namespace InfinityHairartsAPI.Services
                         BookingDate = requestedBookingDate.Value.Date.ToString();
                         TodayBooking = requestedBookingDate.Value.Date == salonNow.Date ? "Not Completed" : "Completed";
                     }
-                    currentTime = currentTime.Add(new TimeSpan(1, 30, 0));
                     var bookingDay = Convert.ToDateTime(BookingDate).Date;
                     for (int i = 0; i < DT.Rows.Count; i++)
                     {
@@ -1088,7 +1087,7 @@ namespace InfinityHairartsAPI.Services
                     && !HasFreeTime(bookedIds, row => row["EnableDisable"].ToString() == "Enable"))
                 {
                     for (DateTime nextDay = Convert.ToDateTime(BookingDate).Date.AddDays(1);
-                         nextDay <= salonNow.Date.AddDays(5); nextDay = nextDay.AddDays(1))
+                         nextDay <= salonNow.Date.AddDays(CustomerBookingRules.MaxAdvanceDays); nextDay = nextDay.AddDays(1))
                     {
                         if (nextDay.DayOfWeek == DayOfWeek.Friday) continue;
                         var nextOccupied = LoadOccupiedTimes(nextDay);
@@ -1132,18 +1131,18 @@ namespace InfinityHairartsAPI.Services
             DTdateValues.Columns.Add("Month",typeof(string));
             DTdateValues.Columns.Add("Year",typeof(string));
             DTdateValues.Columns.Add("FullDate",typeof(string));
-            // The app books only the first listed date, using the times returned
-            // above. Always start the list on the date those times belong to,
-            // including an explicitly requested date, so the two never disagree.
+            // The times returned above belong to the first date. Always start the list on
+            // that date, including an explicitly requested one, so the two never disagree.
             DateTime firstDate = salonNow.Date;
             if (DateTime.TryParse(BookingDate, out var effectiveDate))
                 firstDate = effectiveDate.Date;
             else if (salonNow > salonNow.Date.AddHours(18) || showTomorrowOnly)
                 firstDate = firstDate.AddDays(1);
-            for (int i = 0; i < 5; i++)
+            // Offer the next ListedDates bookable dates (Fridays are closed), inside the booking window.
+            for (int i = 0; DTdateValues.Rows.Count < CustomerBookingRules.ListedDates; i++)
             {
                 DateTime date = firstDate.AddDays(i);
-                if (date > salonNow.Date.AddDays(5)) break;
+                if (date > salonNow.Date.AddDays(CustomerBookingRules.MaxAdvanceDays)) break;
 
                 string day = date.DayOfWeek.ToString();   // Monday
                 string month = date.ToString("MMMM");     // January
@@ -1246,6 +1245,16 @@ namespace InfinityHairartsAPI.Services
                                 Parameter.Add("BookingDate", BookingDate);
                                 Parameter.Add("CreatedOn", DateTime.Now);
                                 con.Execute("updateSeatBookingDetails", Parameter, commandType: CommandType.StoredProcedure, commandTimeout: 0);
+                            }
+                            // Moving the booking to another date starts a fresh choice of time. Without this the
+                            // time picked for the old date follows the booking (8 AM on the 23rd became 8 AM on
+                            // the 21st). The procedure only touches times of a booking still being chosen.
+                            using (con = DBConnection())
+                            {
+                                var Parameter = new DynamicParameters();
+                                Parameter.Add("SeatBookingDetailsID", SeatBookingDetailsID);
+                                Parameter.Add("CustomerID", CustomerID);
+                                con.Execute("deleteCustomerTimeSelectionBySeatBookingDetailsID", Parameter, commandType: CommandType.StoredProcedure, commandTimeout: 0);
                             }
                         }
                         else

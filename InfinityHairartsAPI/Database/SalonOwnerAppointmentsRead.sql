@@ -12,6 +12,7 @@ ALTER PROCEDURE dbo.GetSalonOwnerAppointments
 AS
 BEGIN
     SET NOCOUNT ON;
+    DECLARE @Today date = CONVERT(date, DATEADD(minute, 330, SYSUTCDATETIME()));
     IF NOT EXISTS (
         SELECT 1 FROM dbo.SalonOwner o
         JOIN dbo.SalonMaster s ON s.SalonMasterID = o.SalonMasterID
@@ -57,12 +58,12 @@ BEGIN
         WHERE b.SeatBookingDetailsID = a.SeatBookingDetailsID AND COALESCE(b.IsDeleted, 0) = 0
     ) bill
     WHERE a.CompletionStatus = @Status
+    -- Today first, then upcoming days (tomorrow, ...), then past days newest-first. Today is IST (UTC+5:30).
     ORDER BY
-        CASE WHEN @FromDate IS NULL THEN a.BookingDate END DESC,
-        CASE WHEN @FromDate IS NOT NULL THEN a.BookingDate END,
-        CASE WHEN @FromDate IS NULL THEN timing.StartTime END DESC,
-        CASE WHEN @FromDate IS NOT NULL THEN timing.StartTime END,
-        a.SeatBookingDetailsID
+        CASE WHEN a.BookingDate >= @Today THEN 0 ELSE 1 END,
+        CASE WHEN a.BookingDate >= @Today THEN a.BookingDate END,
+        CASE WHEN a.BookingDate < @Today THEN a.BookingDate END DESC,
+        timing.StartTime, a.SeatBookingDetailsID
     OFFSET ((CAST(@Page AS bigint) - 1) * 10) ROWS FETCH NEXT 10 ROWS ONLY;
 END;
 GO
