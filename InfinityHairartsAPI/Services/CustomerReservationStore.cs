@@ -149,7 +149,7 @@ public sealed class CustomerReservationStore(IConfiguration configuration)
 					}, tx);
 					var now = CustomerBookingRules.Now;
 					if (!CustomerBookingRules.TryReadSlotTime(slotTime, out var startsAt)
-						|| (date.Date == now.Date && startsAt < now.TimeOfDay.Add(TimeSpan.FromMinutes(90))))
+						|| (date.Date == now.Date && startsAt < now.TimeOfDay))
 					{
 						return Finish("Invalid Time");
 					}

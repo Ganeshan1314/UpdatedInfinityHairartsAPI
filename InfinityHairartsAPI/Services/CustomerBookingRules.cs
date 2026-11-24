@@ -11,9 +11,16 @@ public static class CustomerBookingRules
 
 	public static DateTime Today => Now.Date;
 
+	// Customers choose from this many bookable dates, starting at the first one (Fridays are closed).
+	public const int ListedDates = 7;
+
+	// The first bookable date can be up to two days out (after closing time with Friday next), and
+	// ListedDates non-Friday dates always fit within eight days of that.
+	public const int MaxAdvanceDays = 9;
+
 	public static bool IsAvailableDate(DateTime date, DateTime today)
 	{
-		if (date.Date >= today.Date && date.Date <= today.Date.AddDays(5.0))
+		if (date.Date >= today.Date && date.Date <= today.Date.AddDays(MaxAdvanceDays))
 		{
 			return date.DayOfWeek != DayOfWeek.Friday;
 		}

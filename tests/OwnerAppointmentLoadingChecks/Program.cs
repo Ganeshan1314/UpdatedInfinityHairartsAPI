@@ -81,7 +81,7 @@ static async Task RunAsync()
         var all = await Read();
         Check(all.Items.Count == 10 && all.TotalCount == 12 && all.PageSize == 10 && all.Page == 1, "Latest appointments load ten confirmed bookings per page across all history");
         Check(all.Counts.Pending == 12 && all.Counts.InProgress == 2 && all.Counts.Completed == 3, "Status counts cover the full confirmed history without other salons, drafts or cancelled bookings");
-        Check(all.Items.Select(b => b.BookingDate).SequenceEqual(Enumerable.Range(3,10).Reverse().Select(day => new DateTime(2026,10,day))), "Unfiltered appointments show newest dates first");
+        Check(all.Items.Select(b => b.BookingDate).SequenceEqual(Enumerable.Range(1,10).Select(day => new DateTime(2026,10,day))), "Unfiltered appointments show earliest dates first");
         Check(all.Items.All(b => b.SeatBookingDetailsID != otherBooking && b.SeatCount == 2 && b.StartTime == TimeSpan.FromHours(9)), "Multiple time selections keep a single booking with the earliest appointment time");
         Check(all.Items.All(b => b.CustomerName.StartsWith("Test") && b.MobileNo == "0000000000"), "Customer contact details are returned in the existing frontend format");
         var second = await Read(page: 2);

@@ -198,6 +198,20 @@ try
         && firstChoice.Body.GetProperty("draft").GetProperty("selections").EnumerateArray().Single().GetProperty("id").GetGuid() == slot
         && firstChoice.Body.GetProperty("draft").GetProperty("version").GetInt64() == firstDraft.Version,
         "A first time choice prepares the booking and saves the time in one request");
+    // Picking another date starts a fresh time choice: the time chosen for the first date must not follow the booking.
+    var anotherDate = date.AddDays(1);
+    while (!CustomerBookingRules.IsAvailableDate(anotherDate, CustomerBookingRules.Today)) anotherDate = anotherDate.AddDays(1);
+    var moved = await Post("/api/Appoinment/insertupdateSeatBookingDetails", new { SeatCount = 1, BookingDate = anotherDate.ToString("yyyy-MM-dd"), SalonMasterID = salon });
+    var movedDraft = store.GetDraft(customer)!;
+    Check(moved.Status == HttpStatusCode.OK && movedDraft.SeatBookingDetailsID == draft.SeatBookingDetailsID
+        && movedDraft.BookingDate == anotherDate.ToString("yyyy-MM-dd") && movedDraft.Selections.Count == 0
+        && moved.Body.GetProperty("draft").GetProperty("selections").GetArrayLength() == 0,
+        "Choosing another date moves the booking and clears the time chosen for the old date");
+    // Put the first date and its time back for the checks that follow.
+    await Post("/api/Appoinment/insertupdateSeatBookingDetails", new { SeatCount = 1, BookingDate = date.ToString("yyyy-MM-dd"), SalonMasterID = salon });
+    Check((await Post("/api/Appoinment/insertCustomerTimeSelection",
+        new insertCustomerTimeSelection { TimeAllocationID = slot, BookingDate = draft.BookingDate, SalonMasterID = salon })).Status == HttpStatusCode.OK
+        && store.GetDraft(customer)!.Selections.Count == 1, "The original date accepts a time again after switching back");
     Check((await Post("/api/Appoinment/insertCustomerTimeSelection",
         new insertCustomerTimeSelection { TimeAllocationID = slot, BookingDate = draft.BookingDate })).Status == HttpStatusCode.BadRequest,
         "A first time choice requires a salon");

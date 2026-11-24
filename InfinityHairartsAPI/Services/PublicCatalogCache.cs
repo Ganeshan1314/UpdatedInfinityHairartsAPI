@@ -15,6 +15,9 @@ public static class PublicCatalogCache
     private static readonly ConcurrentDictionary<string, Entry> Entries = new();
     private static readonly ConcurrentDictionary<string, byte> Refreshing = new();
     private static readonly TimeSpan Fresh = TimeSpan.FromMinutes(2);
+    // Service list/category entries change when salon owners edit services, so they go stale sooner.
+    private static readonly TimeSpan SyncFresh = TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan RefreshWait = TimeSpan.FromMilliseconds(1500);
     private static readonly TimeSpan MaxAge = TimeSpan.FromHours(24);
 
     public static async Task<T> GetOrLoadAsync<T>(string key, Func<Task<T>> load) where T : class
@@ -42,24 +45,31 @@ public static class PublicCatalogCache
     {
         if (Entries.TryGetValue(key, out var entry) && DateTime.UtcNow - entry.LoadedAtUtc < MaxAge)
         {
-            if (DateTime.UtcNow - entry.LoadedAtUtc >= Fresh && Refreshing.TryAdd(key, 0))
+            if (DateTime.UtcNow - entry.LoadedAtUtc >= SyncFresh && Refreshing.TryAdd(key, 0))
             {
-                _ = Task.Run(() =>
+                var refresh = Task.Run(() =>
                 {
                     try
                     {
                         var refreshed = load();
-                        if (isSuccessful(refreshed)) Entries[key] = new Entry(refreshed, DateTime.UtcNow);
+                        if (!isSuccessful(refreshed)) return null;
+                        Entries[key] = new Entry(refreshed, DateTime.UtcNow);
+                        return refreshed;
                     }
                     catch
                     {
                         // Keep serving the saved copy; the next request tries again.
+                        return null;
                     }
                     finally
                     {
                         Refreshing.TryRemove(key, out _);
                     }
                 });
+                // An owner's edit (e.g. a renamed service) must reach customers on the very next
+                // request, not the one after. Wait briefly for the refresh; if the database is slow
+                // the saved copy is returned immediately and the refresh finishes in the background.
+                if (refresh.Wait(RefreshWait) && refresh.Result is { } fresh) return fresh;
             }
             return (T)entry.Value;
         }
