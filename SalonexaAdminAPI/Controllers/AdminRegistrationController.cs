@@ -19,6 +19,10 @@ public sealed class AdminRegistrationController(
     [RequestSizeLimit(MaximumRequestSize), RequestFormLimits(MultipartBodyLengthLimit = MaximumRequestSize)]
     public async Task<IActionResult> Signup([FromForm] SalonOwnerSignupRequest request, CancellationToken cancellationToken)
     {
+        // The salon name and address are shown to customers, so they follow the same content rules.
+        var rejection = PublicTextRules.Rejection(("salon name", request.SalonName), ("salon address", request.SalonAddress),
+            ("owner name", request.OwnerName));
+        if (rejection is not null) return BadRequest(new { message = rejection });
         try
         {
             return await registration.SignupAsync(request, cancellationToken) switch

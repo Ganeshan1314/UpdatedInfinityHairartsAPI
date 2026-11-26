@@ -30,6 +30,21 @@ public sealed class SalonOwnerServicesController(SalonOwnerServicesReader servic
         }
     }
 
+    [HttpGet("categories")]
+    public async Task<IActionResult> GetCategories(CancellationToken cancellationToken)
+    {
+        var owner = SalonOwnerPersistentSignIn.RestoredOwner(HttpContext);
+        if (owner is null) return Unauthorized(new { message = "Please sign in again." });
+        try
+        {
+            return Ok(await services.GetCategoriesAsync(cancellationToken));
+        }
+        catch (SqlException error) when (error.Number is 2812 or 208 or 207)
+        {
+            return CatalogueUpdateRequired();
+        }
+    }
+
     [HttpPost]
     [RequestSizeLimit(MaximumRequestSize), RequestFormLimits(MultipartBodyLengthLimit = MaximumRequestSize)]
     public Task<IActionResult> Create([FromForm] SalonOwnerServiceRequest request,

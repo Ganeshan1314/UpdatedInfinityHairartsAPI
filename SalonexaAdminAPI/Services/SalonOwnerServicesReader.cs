@@ -15,6 +15,20 @@ public sealed class SalonOwnerServicesReader(IConfiguration configuration)
             "dbo.GetSalonOwnerServices", new { OwnerID = ownerId, SalonID = salonId },
             commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken))).AsList();
     }
+
+    /// <summary>Every category (haircut group) that already exists, shared across salons, in menu order.</summary>
+    public async Task<IReadOnlyList<string>> GetCategoriesAsync(CancellationToken cancellationToken)
+    {
+        await using var connection = new SqlConnection(configuration.GetConnectionString("dbconnection")
+            ?? throw new InvalidOperationException("The dbconnection connection string is not configured."));
+        // Restricted names are never offered for new services.
+        return (await connection.QueryAsync<string>(new CommandDefinition(
+            @"SELECT LTRIM(RTRIM(HairCutItemGroup)) FROM dbo.HairCut_GroupMaster
+              WHERE NULLIF(LTRIM(RTRIM(HairCutItemGroup)), N'') IS NOT NULL
+              GROUP BY LTRIM(RTRIM(HairCutItemGroup))
+              ORDER BY MIN(OrderID), LTRIM(RTRIM(HairCutItemGroup))",
+            cancellationToken: cancellationToken))).Where(PublicTextRules.IsAllowed).ToList();
+    }
 }
 
 public sealed class SalonOwnerServiceItem

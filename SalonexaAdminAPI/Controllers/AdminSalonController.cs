@@ -19,7 +19,13 @@ public sealed class AdminSalonController(SalonOwnerSalonProfileService salons, I
 
     [HttpPut]
     public Task<IActionResult> Save([FromBody] OwnerSalonProfileRequest request, CancellationToken cancellationToken) =>
-        ForOwner(async owner => Ok(await salons.SaveAsync(owner.SalonOwnerID, owner.SalonMasterID, request, cancellationToken)));
+        ForOwner(async owner =>
+        {
+            // The salon name and address are shown to customers, so they follow the same content rules.
+            var rejection = PublicTextRules.Rejection(("salon name", request.SalonName), ("salon address", request.SalonAddress));
+            if (rejection is not null) return BadRequest(new { message = rejection });
+            return Ok(await salons.SaveAsync(owner.SalonOwnerID, owner.SalonMasterID, request, cancellationToken));
+        });
 
     private async Task<IActionResult> ForOwner(Func<SalonOwnerLoginResponse, Task<IActionResult>> action)
     {

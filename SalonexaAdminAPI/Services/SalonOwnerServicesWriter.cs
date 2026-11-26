@@ -28,6 +28,11 @@ public sealed class SalonOwnerServicesWriter(
             throw new ArgumentException("Please check your service details.");
         if (!serviceId.HasValue && request.Image is null)
             throw new ArgumentException("A service image is required.");
+        // Customers see these words, so every field is screened on every save, with no exceptions for
+        // existing records: an older service that breaks the rules must be reworded before it can be saved.
+        var rejection = PublicTextRules.Rejection(
+            ("category", request.Category), ("service name", request.ServiceName), ("description", request.Description));
+        if (rejection is not null) throw new ArgumentException(rejection);
         var services = await reader.GetAsync(ownerId, salonId, cancellationToken);
         if (serviceId.HasValue && !services.Any(service => service.SalonServiceID == serviceId && service.CanEdit))
             throw new KeyNotFoundException("Service not found in your salon.");

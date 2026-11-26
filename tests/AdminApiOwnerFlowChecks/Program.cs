@@ -188,7 +188,7 @@ static async Task RunAsync()
 
         // ---------------- salon ----------------
         Check((await anonymous.Send(HttpMethod.Get, "/api/Admin/salon")).StatusCode == HttpStatusCode.Unauthorized, "Anonymous salon reads need sign-in");
-        object Update(string name = "Glow Studio & Spa", string open = "09:30", string close = "20:00", int chairs = 4, byte? holiday = 2,
+        object Update(string name = "Glow Studio & Salon", string open = "09:30", string close = "20:00", int chairs = 4, byte? holiday = 2,
             decimal? lat = 10.81m, decimal? lon = 78.69m, Guid? location = null) => new
         { salonName = name, locationMasterID = location ?? area, salonAddress = "14 Main Road", contactNumber = "9123456780",
           openingTime = open, closingTime = close, chairCount = chairs, weeklyHoliday = holiday, latitude = lat, longitude = lon };
@@ -199,10 +199,10 @@ static async Task RunAsync()
             "GET salon returns the owner's own salon with the camelCase fields the app expects");
         var saved = await owner.Send(HttpMethod.Put, "/api/Admin/salon", JsonContent.Create(Update()));
         var savedJson = await saved.Content.ReadFromJsonAsync<JsonElement>();
-        Check(saved.StatusCode == HttpStatusCode.OK && savedJson.GetProperty("salonName").GetString() == "Glow Studio & Spa"
+        Check(saved.StatusCode == HttpStatusCode.OK && savedJson.GetProperty("salonName").GetString() == "Glow Studio & Salon"
             && savedJson.GetProperty("openingTime").GetString() == "09:30" && savedJson.GetProperty("chairCount").GetInt32() == 4
             && savedJson.GetProperty("weeklyHoliday").GetInt32() == 2, "Saving the salon returns the updated details");
-        Check(await db.ExecuteScalarAsync<string>("SELECT SalonName FROM dbo.SalonMaster WHERE SalonMasterID=@id", new { id = (Guid)row.SalonMasterID }) == "Glow Studio & Spa"
+        Check(await db.ExecuteScalarAsync<string>("SELECT SalonName FROM dbo.SalonMaster WHERE SalonMasterID=@id", new { id = (Guid)row.SalonMasterID }) == "Glow Studio & Salon"
             && await db.ExecuteScalarAsync<string>("SELECT SalonName FROM dbo.SalonMaster WHERE SalonMasterID=@seededSalon", new { seededSalon }) == "Existing Salon",
             "The edit is saved to the owner's salon only");
         foreach (var (label, body) in new (string, object)[]
