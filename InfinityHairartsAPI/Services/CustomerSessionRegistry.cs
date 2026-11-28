@@ -23,9 +23,20 @@ public sealed class CustomerSessionRegistry(IMemoryCache cache)
 		string text = session.GetString("CustomerAuthToken");
 		if (text != null && text.Length == 64 && cache.TryGetValue<Guid>("customer-auth:" + text, out var value))
 		{
-			return value == customer;
+			return value == customer && !IsDeleted(customer);
 		}
 		return false;
+	}
+
+	// Kept for as long as the longest session can live (see Create).
+	public void MarkDeleted(Guid customer)
+	{
+		cache.Set("customer-deleted:" + customer, true, TimeSpan.FromDays(1.0));
+	}
+
+	public bool IsDeleted(Guid customer)
+	{
+		return cache.TryGetValue("customer-deleted:" + customer, out _);
 	}
 
 	public void Revoke(ISession session)

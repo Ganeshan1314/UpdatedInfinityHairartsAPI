@@ -92,6 +92,7 @@ builder.Services.AddHostedService<OwnerBookingPushWorker>();
 builder.Services.AddDistributedMemoryCache();
 builder.Services.AddMemoryCache();
 builder.Services.AddSingleton<CustomerSessionRegistry>();
+builder.Services.AddHostedService<CustomerAccountDeletionWorker>();
 
 var sessionIdleTimeoutMinutes = builder.Configuration.GetValue<int?>("Session:IdleTimeoutMinutes") ?? 30;
 if (sessionIdleTimeoutMinutes <= 0)

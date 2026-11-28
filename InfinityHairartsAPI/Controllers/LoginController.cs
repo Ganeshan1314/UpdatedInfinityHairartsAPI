@@ -66,8 +66,14 @@ namespace InfinityHairartsAPI.Controllers
 			Tuple<string, List<Dictionary<string, object>>> result = await _loginservice.CustomerLoginAsync(new LoginModal.CustomerLoginRequest
 			{
 				MobileNo = text,
-				Address = modal.Address?.Trim()
+				Address = modal.Address?.Trim(),
+				RestoreOnly = modal.RestoreOnly
 			}, deadline.Token);
+			if (result.Item1 == "Account Not Found")
+			{
+				outcome = "no-account";
+				return Ok(new { item1 = result.Item1 });
+			}
 			if (result.Item1 != "Success" || !Guid.TryParse(base.HttpContext.Session.GetString("CustomerID"), out var result2) || result2 == Guid.Empty)
 			{
 				CustomerSession.Clear(base.HttpContext.Session);
@@ -135,6 +141,50 @@ namespace InfinityHairartsAPI.Controllers
             }
             return Ok(_loginservice.updateCustomerRegistration(modal));
         }
+
+	// Customers manage only their own deletion request: the identity comes from the
+	// session, never from the request. CustomerApiSessionMiddleware requires a live one.
+	// Nothing is erased here; CustomerAccountDeletionWorker does that when it is due.
+	[HttpGet("accountDeletion")]
+	[SessionTimeout]
+	public Task<IActionResult> AccountDeletion(CancellationToken token) =>
+		ForOwnAccount(id => _loginservice.GetAccountDeletionAsync(id, token),
+			due => Ok(new { item1 = "Success", deleteAfterUtc = due }));
+
+	[HttpPost("requestAccountDeletion")]
+	[SessionTimeout]
+	public Task<IActionResult> RequestAccountDeletion(CancellationToken token) =>
+		ForOwnAccount(id => _loginservice.RequestAccountDeletionAsync(id, token),
+			due => due.HasValue
+				? Ok(new { item1 = "Success", deleteAfterUtc = due })
+				: StatusCode(503, new { message = "Your request could not be saved. Please try again." }));
+
+	[HttpPost("cancelAccountDeletion")]
+	[SessionTimeout]
+	public Task<IActionResult> CancelAccountDeletion(CancellationToken token) =>
+		ForOwnAccount(id => _loginservice.CancelAccountDeletionAsync(id, token),
+			due => due.HasValue
+				? Conflict(new { message = "The waiting period has ended, so deletion can no longer be cancelled." })
+				: Ok(new { item1 = "Success" }));
+
+	private async Task<IActionResult> ForOwnAccount(Func<Guid, Task<DateTime?>> step, Func<DateTime?, IActionResult> respond)
+	{
+		if (!Guid.TryParse(HttpContext.Session.GetString("CustomerID"), out var customerId) || customerId == Guid.Empty)
+		{
+			return Unauthorized(new { item1 = "Session Expired" });
+		}
+
+		try
+		{
+			return respond(await step(customerId));
+		}
+		catch (Exception ex) when (ex is not OperationCanceledException)
+		{
+			_logger.LogError("Account deletion request failed: ErrorType={ErrorType} SqlErrorNumber={SqlErrorNumber} TraceId={TraceId}",
+				ex.GetType().Name, (ex as SqlException)?.Number, HttpContext.TraceIdentifier);
+			return StatusCode(503, new { message = "Account deletion is unavailable right now. Please try again." });
+		}
+	}
 
 	[HttpPost("logout")]
 	[HttpPost("clearSessionValues")]

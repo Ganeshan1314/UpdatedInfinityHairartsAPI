@@ -6,7 +6,8 @@ public sealed class CustomerApiSessionMiddleware(RequestDelegate next)
     private static readonly HashSet<string> PrivateLoginRoutes = new(StringComparer.OrdinalIgnoreCase)
     {
         "/session", "/uploadCustomerImage", "/updateCustomerRegistration",
-        "/checkCustomerMobileNumberExist", "/getEmployeeDetails"
+        "/checkCustomerMobileNumberExist", "/getEmployeeDetails",
+        "/accountDeletion", "/requestAccountDeletion", "/cancelAccountDeletion"
     };
 
     public async Task InvokeAsync(HttpContext context, CustomerSessionRegistry registry)

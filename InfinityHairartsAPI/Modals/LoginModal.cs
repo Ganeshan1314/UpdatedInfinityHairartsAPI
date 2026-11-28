@@ -6,6 +6,8 @@
         {
             public string? MobileNo { get; set; }
             public string? Address { get; set; }
+            // Set by automatic sign-in: sign in to an existing account, never create one.
+            public bool RestoreOnly { get; set; }
         }
         public class getaddressModal
         {

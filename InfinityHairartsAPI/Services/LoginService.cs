@@ -150,6 +150,14 @@ namespace InfinityHairartsAPI.Services
                     """, parameters, commandTimeout: 5, cancellationToken: cancellationToken));
                 lookupMs = clock.Elapsed.TotalMilliseconds - stageStartedMs;
 
+                // Otherwise a device that still remembers a deleted number would
+                // create the account again without the customer asking.
+                if (!customerId.HasValue && modal!.RestoreOnly)
+                {
+                    completed = true;
+                    return Tuple.Create("Account Not Found", new List<Dictionary<string, object>>());
+                }
+
                 if (!customerId.HasValue)
                 {
                     stage = "insert";
@@ -259,6 +267,59 @@ namespace InfinityHairartsAPI.Services
                 log.Error(ex);
                 return string.Empty;
             }
+        }
+
+        // The date a pending account deletion becomes due (UTC), or null when none is pending.
+        public Task<DateTime?> GetAccountDeletionAsync(Guid customerId, CancellationToken cancellationToken = default) =>
+            RunAccountDeletionStepAsync("dbo.GetCustomerAccountDeletion", customerId, cancellationToken);
+
+        public Task<DateTime?> RequestAccountDeletionAsync(Guid customerId, CancellationToken cancellationToken = default) =>
+            RunAccountDeletionStepAsync("dbo.RequestCustomerAccountDeletion", customerId, cancellationToken);
+
+        // A date that is still returned means it was too late to cancel.
+        public Task<DateTime?> CancelAccountDeletionAsync(Guid customerId, CancellationToken cancellationToken = default) =>
+            RunAccountDeletionStepAsync("dbo.CancelCustomerAccountDeletion", customerId, cancellationToken);
+
+        public async Task<IReadOnlyList<Guid>> GetDueAccountDeletionsAsync(CancellationToken cancellationToken = default)
+        {
+            await using var connection = new SqlConnection(_configuration.GetConnectionString("dbconnection"));
+            return (await connection.QueryAsync<Guid>(new CommandDefinition("dbo.GetDueCustomerAccountDeletions",
+                commandTimeout: 15, commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken))).ToList();
+        }
+
+        private async Task<DateTime?> RunAccountDeletionStepAsync(string procedure, Guid customerId, CancellationToken cancellationToken)
+        {
+            await using var connection = new SqlConnection(_configuration.GetConnectionString("dbconnection"));
+            var due = await connection.ExecuteScalarAsync<DateTime?>(new CommandDefinition(procedure,
+                new { CustomerID = customerId }, commandTimeout: 10,
+                commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+            // Marked as UTC so that the JSON value carries its time zone.
+            return due.HasValue ? DateTime.SpecifyKind(due.Value, DateTimeKind.Utc) : null;
+        }
+
+        // Erases an account whose waiting period has ended; the procedure ignores any other.
+        // The account and its profile photos go together: if a photo cannot be deleted,
+        // the database changes roll back and the request stays to be tried again.
+        public async Task<IReadOnlyList<Guid>> DeleteCustomerAccountAsync(Guid customerId, CancellationToken cancellationToken = default)
+        {
+            await using var connection = new SqlConnection(_configuration.GetConnectionString("dbconnection"));
+            await connection.OpenAsync(cancellationToken);
+            await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(cancellationToken);
+
+            var deleted = (await connection.QueryAsync<Guid>(new CommandDefinition("dbo.DeleteCustomerAccount",
+                new { CustomerID = customerId }, transaction, commandTimeout: 15,
+                commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken))).ToList();
+
+            var photoFolder = Path.Combine(_environment.ContentRootPath, "CustomerImages");
+            if (Directory.Exists(photoFolder))
+            {
+                foreach (var id in deleted)
+                    foreach (var photo in Directory.GetFiles(photoFolder, $"{id}.*"))
+                        System.IO.File.Delete(photo);
+            }
+
+            await transaction.CommitAsync(CancellationToken.None);
+            return deleted;
         }
 
         public string updateCustomerRegistration(UpdateCustomerProfileRequest modal)

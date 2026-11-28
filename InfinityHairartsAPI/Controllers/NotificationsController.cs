@@ -19,10 +19,12 @@ public sealed class NotificationsController : ControllerBase
     [HttpPost("register-device")]
     public async Task<IActionResult> RegisterDevice(
         [FromBody] RegisterDeviceRequest request,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        [FromServices] CustomerSessionRegistry registry)
     {
         var customerIdValue = HttpContext.Session.GetString("CustomerID");
-        if (!Guid.TryParse(customerIdValue, out var customerId))
+        // Another device's session must not register a token for a deleted account.
+        if (!Guid.TryParse(customerIdValue, out var customerId) || registry.IsDeleted(customerId))
         {
             return Unauthorized(new { item1 = "Session Expired" });
         }
