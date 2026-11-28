@@ -308,6 +308,26 @@ public class AppoinmentController : ControllerBase
 		return new JsonResult(_appoinmentService.getCustomerBookingDetails());
 	}
 
+	// What this customer gets from the first-booking offer. With review=true it prices the booking
+	// waiting for confirmation; otherwise it answers for the chosen salon, or in general.
+	[HttpGet("firstBookingOffer")]
+	public ActionResult FirstBookingOffer([FromQuery] Guid? salonMasterID = null, [FromQuery] bool review = false)
+	{
+		var quote = _appoinmentService.getFirstBookingOffer(salonMasterID, review);
+		return quote is null
+			? Unauthorized(new { item1 = "Session Expired" })
+			: new JsonResult(new { item1 = "Success", item2 = quote });
+	}
+
+	[HttpGet("firstBookingOfferBookings")]
+	public ActionResult FirstBookingOfferBookings()
+	{
+		var offers = _appoinmentService.getFirstBookingOfferBookings();
+		return offers is null
+			? Unauthorized(new { item1 = "Session Expired" })
+			: new JsonResult(new { item1 = "Success", item2 = offers });
+	}
+
 	[HttpPost("SendOTPCustomer")]
 	public ActionResult SendOTPCustomer([FromBody] AppoinmentModal.ReviewTimeSelectionRequest request)
 	{

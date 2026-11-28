@@ -35,10 +35,19 @@ BEGIN
     );
 END;
 GO
+-- A rejected salon stays hidden and leaves the approval queue. Approving it clears the rejection.
+IF COL_LENGTH(N'dbo.SalonMaster', N'RejectedUtc') IS NULL
+    ALTER TABLE dbo.SalonMaster ADD RejectedUtc datetime2(0) NULL;
+GO
+IF COL_LENGTH(N'dbo.SuperAdminSalonAudit', N'IsRejection') IS NULL
+    ALTER TABLE dbo.SuperAdminSalonAudit ADD IsRejection bit NOT NULL
+        CONSTRAINT DF_SuperAdminSalonAudit_IsRejection DEFAULT(0) WITH VALUES;
+GO
 IF OBJECT_ID(N'dbo.GetSuperAdminOverview', N'P') IS NULL
     EXEC(N'CREATE PROCEDURE dbo.GetSuperAdminOverview AS BEGIN SET NOCOUNT ON; END');
 GO
-ALTER PROCEDURE dbo.GetSuperAdminOverview @FromDate date, @ToDate date
+-- @IncludeRejection defaults to 0 so an API deployed before salon rejection keeps its result shape.
+ALTER PROCEDURE dbo.GetSuperAdminOverview @FromDate date, @ToDate date, @IncludeRejection bit = 0
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -46,7 +55,7 @@ BEGIN
         THROW 50041, 'Invalid dashboard date range.', 1;
     SELECT TotalSalons = (SELECT COUNT(*) FROM dbo.SalonMaster),
         VisibleSalons = (SELECT COUNT(*) FROM dbo.SalonMaster WHERE IsActive = 1 AND IsVisibleToCustomers = 1),
-        AwaitingApproval = (SELECT COUNT(*) FROM dbo.SalonMaster WHERE IsActive = 1 AND IsVisibleToCustomers = 0),
+        AwaitingApproval = (SELECT COUNT(*) FROM dbo.SalonMaster WHERE IsActive = 1 AND IsVisibleToCustomers = 0 AND RejectedUtc IS NULL),
         ActiveOwners = (SELECT COUNT(*) FROM dbo.SalonOwner WHERE IsActive = 1),
         Bookings = COUNT(*),
         CompletedBookings = COUNT(CASE WHEN sb.CompletionStatus = N'Completed' THEN 1 END),
@@ -61,24 +70,30 @@ BEGIN
     LEFT JOIN dbo.SeatBookingDetails sb ON sb.BookingDate >= d.BookingDate AND sb.BookingDate < DATEADD(day, 1, d.BookingDate)
         AND sb.BookingStatusMasterID = 2
     GROUP BY d.BookingDate ORDER BY d.BookingDate;
-    SELECT TOP(50) AuditID, SalonMasterID, SalonName, ActorUserName, IsVisibleToCustomers, CreatedUtc
-    FROM dbo.SuperAdminSalonAudit ORDER BY AuditID DESC;
+    IF @IncludeRejection = 1
+        SELECT TOP(50) AuditID, SalonMasterID, SalonName, ActorUserName, IsVisibleToCustomers, CreatedUtc, IsRejection
+        FROM dbo.SuperAdminSalonAudit ORDER BY AuditID DESC;
+    ELSE
+        SELECT TOP(50) AuditID, SalonMasterID, SalonName, ActorUserName, IsVisibleToCustomers, CreatedUtc
+        FROM dbo.SuperAdminSalonAudit ORDER BY AuditID DESC;
 END;
 GO
 IF OBJECT_ID(N'dbo.GetSuperAdminSalons', N'P') IS NULL
     EXEC(N'CREATE PROCEDURE dbo.GetSuperAdminSalons AS BEGIN SET NOCOUNT ON; END');
 GO
-ALTER PROCEDURE dbo.GetSuperAdminSalons @Search nvarchar(100) = N'', @Status varchar(10) = 'all', @Page int = 1, @PageSize int = 20
+ALTER PROCEDURE dbo.GetSuperAdminSalons @Search nvarchar(100) = N'', @Status varchar(10) = 'all', @Page int = 1, @PageSize int = 20,
+    @IncludeRejection bit = 0
 AS
 BEGIN
     SET NOCOUNT ON;
-    IF @Page < 1 OR @Page > 100000 OR @PageSize < 1 OR @PageSize > 100 OR @Status NOT IN ('all', 'pending', 'visible', 'inactive')
+    IF @Page < 1 OR @Page > 100000 OR @PageSize < 1 OR @PageSize > 100 OR @Status NOT IN ('all', 'pending', 'visible', 'rejected', 'inactive')
         THROW 50042, 'Invalid salon filter.', 1;
     -- One directory row per salon, even when multiple owner records exist.
     SELECT s.SalonMasterID, s.SalonName, COALESCE(l.LocationName, N'') City,
         COALESCE(s.SalonAddress, N'') SalonAddress, COALESCE(s.ContactNumber, N'') ContactNumber,
         COALESCE(o.OwnerName, N'') OwnerName, COALESCE(o.EmailAddress, N'') EmailAddress,
-        s.IsActive, s.IsVisibleToCustomers
+        s.IsActive, s.IsVisibleToCustomers,
+        CAST(CASE WHEN s.IsVisibleToCustomers = 0 AND s.RejectedUtc IS NOT NULL THEN 1 ELSE 0 END AS bit) IsRejected
     INTO #Salons
     FROM dbo.SalonMaster s
     LEFT JOIN dbo.LocationMaster l ON l.LocationMasterID = s.LocationMasterID
@@ -86,11 +101,16 @@ BEGIN
         WHERE SalonMasterID = s.SalonMasterID ORDER BY IsActive DESC, CreatedUtc, SalonOwnerID) o
     WHERE (@Search = N'' OR CHARINDEX(@Search, s.SalonName) > 0 OR CHARINDEX(@Search, l.LocationName) > 0
         OR CHARINDEX(@Search, o.OwnerName) > 0 OR CHARINDEX(@Search, o.EmailAddress) > 0)
-        AND (@Status = 'all' OR (@Status = 'pending' AND s.IsActive = 1 AND s.IsVisibleToCustomers = 0)
+        AND (@Status = 'all' OR (@Status = 'pending' AND s.IsActive = 1 AND s.IsVisibleToCustomers = 0 AND s.RejectedUtc IS NULL)
             OR (@Status = 'visible' AND s.IsActive = 1 AND s.IsVisibleToCustomers = 1)
+            OR (@Status = 'rejected' AND s.IsVisibleToCustomers = 0 AND s.RejectedUtc IS NOT NULL)
             OR (@Status = 'inactive' AND s.IsActive = 0));
     SELECT COUNT(*) FROM #Salons;
-    SELECT * FROM #Salons ORDER BY SalonName, SalonMasterID OFFSET (@Page - 1) * @PageSize ROWS FETCH NEXT @PageSize ROWS ONLY;
+    IF @IncludeRejection = 1
+        SELECT * FROM #Salons ORDER BY SalonName, SalonMasterID OFFSET (@Page - 1) * @PageSize ROWS FETCH NEXT @PageSize ROWS ONLY;
+    ELSE
+        SELECT SalonMasterID, SalonName, City, SalonAddress, ContactNumber, OwnerName, EmailAddress, IsActive, IsVisibleToCustomers
+        FROM #Salons ORDER BY SalonName, SalonMasterID OFFSET (@Page - 1) * @PageSize ROWS FETCH NEXT @PageSize ROWS ONLY;
 END;
 GO
 IF OBJECT_ID(N'dbo.SetSuperAdminSalonVisibility', N'P') IS NULL
@@ -124,9 +144,45 @@ BEGIN
     END;
     IF @Current <> @Visible
     BEGIN
-        UPDATE dbo.SalonMaster SET IsVisibleToCustomers = @Visible, UpdatedUtc = SYSUTCDATETIME() WHERE SalonMasterID = @SalonID;
+        UPDATE dbo.SalonMaster SET IsVisibleToCustomers = @Visible,
+            RejectedUtc = CASE WHEN @Visible = 1 THEN NULL ELSE RejectedUtc END, UpdatedUtc = SYSUTCDATETIME()
+        WHERE SalonMasterID = @SalonID;
         INSERT dbo.SuperAdminSalonAudit(SalonMasterID, SalonName, ActorUserName, IsVisibleToCustomers)
             VALUES(@SalonID, @Name, @Actor, @Visible);
+    END;
+    COMMIT;
+END;
+GO
+IF OBJECT_ID(N'dbo.RejectSuperAdminSalon', N'P') IS NULL
+    EXEC(N'CREATE PROCEDURE dbo.RejectSuperAdminSalon AS BEGIN SET NOCOUNT ON; END');
+GO
+ALTER PROCEDURE dbo.RejectSuperAdminSalon @SalonID uniqueidentifier, @Actor nvarchar(100)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    IF NULLIF(LTRIM(RTRIM(@Actor)), N'') IS NULL
+        THROW 50043, 'A validated administrator is required.', 1;
+    BEGIN TRANSACTION;
+    DECLARE @Visible bit, @RejectedUtc datetime2(0), @Name nvarchar(200);
+    SELECT @Visible = IsVisibleToCustomers, @RejectedUtc = RejectedUtc, @Name = SalonName
+        FROM dbo.SalonMaster WITH (UPDLOCK, HOLDLOCK) WHERE SalonMasterID = @SalonID;
+    IF @Name IS NULL
+    BEGIN
+        ROLLBACK;
+        THROW 50044, 'This salon no longer exists.', 1;
+    END;
+    -- Only a hidden salon can be rejected; this also catches an approval made since the list was loaded.
+    IF @Visible = 1
+    BEGIN
+        ROLLBACK;
+        THROW 50046, 'Visibility changed since this salon was loaded. Refresh and try again.', 1;
+    END;
+    IF @RejectedUtc IS NULL
+    BEGIN
+        UPDATE dbo.SalonMaster SET RejectedUtc = SYSUTCDATETIME(), UpdatedUtc = SYSUTCDATETIME() WHERE SalonMasterID = @SalonID;
+        INSERT dbo.SuperAdminSalonAudit(SalonMasterID, SalonName, ActorUserName, IsVisibleToCustomers, IsRejection)
+            VALUES(@SalonID, @Name, @Actor, 0, 1);
     END;
     COMMIT;
 END;

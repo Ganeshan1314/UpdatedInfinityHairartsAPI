@@ -54,6 +54,13 @@ public class AppoinmentModal
 		[MinLength(1)]
 		[MaxLength(1)]
 		public Guid[] TimeAllocationIDs { get; set; } = Array.Empty<Guid>();
+
+		/// <summary>
+		/// The first-booking discount the app showed the customer. Older apps do not send it and
+		/// book at the normal price.
+		/// </summary>
+		[Range(typeof(decimal), "0.01", "100000")]
+		public decimal? OfferDiscount { get; set; }
 	}
 
 	public class HairCutItemGroupMasterModal

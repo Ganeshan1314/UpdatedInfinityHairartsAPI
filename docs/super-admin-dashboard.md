@@ -37,8 +37,16 @@ Endpoints:
 | POST | `/api/SuperAdmin/logout` | Clear the super admin cookie |
 | GET | `/api/SuperAdmin/session` | Validate and return the current display identity |
 | GET | `/api/SuperAdmin/dashboard?fromDate=YYYY-MM-DD&toDate=YYYY-MM-DD` | Platform counts, date-range totals, seven-day bookings and latest 50 audit events |
-| GET | `/api/SuperAdmin/salons?search=&status=all&page=1` | Salon directory, 20 per page; status is all, pending, visible or inactive |
+| GET | `/api/SuperAdmin/salons?search=&status=all&page=1` | Salon directory, 20 per page; status is all, pending, visible, rejected or inactive |
 | PUT | `/api/SuperAdmin/salons/{id}/visibility` | JSON: `isVisibleToCustomers` and `expectedVisible` booleans |
+| POST | `/api/SuperAdmin/salons/{id}/reject` | Reject a hidden salon (Salonexa admin API only) |
+
+Rejecting sets `SalonMaster.RejectedUtc`. The salon stays hidden, leaves the
+pending filter and the awaiting-approval count, and gets an audit row marked
+`IsRejection`. Nothing is deleted and owner access is unchanged. Approving clears
+the rejection. A visible salon cannot be rejected. Run the updated
+`SuperAdminDashboard.sql` before publishing the admin API. The new result columns
+are returned only when `@IncludeRejection = 1`, so an older API keeps working.
 
 Overview salon/owner counts are current platform totals. Confirmed bookings,
 completed bookings and distinct booking customers use both inclusive booking-date

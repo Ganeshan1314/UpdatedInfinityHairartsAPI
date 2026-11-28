@@ -229,6 +229,52 @@ public sealed class CustomerReservationStore(IConfiguration configuration)
 		return new ReservationReply(text, Guid.Empty, (text == "Success") ? "Completed" : "", reservationDraft);
 	}
 
+	public IReadOnlyList<CustomerBookingOffer> BookingOffersFor(Guid customer)
+	{
+		using SqlConnection db = Open();
+		return BookingOffers.ForCustomer(db, customer);
+	}
+
+	// The price of the services about to be confirmed, from the saved lines (not from the phone).
+	private static decimal BillAmount(SqlConnection db, SqlTransaction tx, Guid customer, Guid bill) =>
+		db.ExecuteScalar<decimal>("SELECT CAST(ISNULL(SUM(HairCut_Item_Total),0) AS decimal(10,2)) FROM dbo.HairCut_Item_Customer_Bill_Primary\nWHERE UniqueBillID=@bill AND Created_By=@customer;", new { bill, customer }, tx);
+
+	/// <summary>
+	/// What the offer would be right now. With <paramref name="forCurrentBooking"/> it prices the booking
+	/// waiting for confirmation; otherwise it answers for the chosen salon, or for the customer in general.
+	/// </summary>
+	public BookingOfferQuote QuoteOffer(Guid customer, Guid bill, Guid? salon, bool forCurrentBooking)
+	{
+		using SqlConnection db = Open();
+		var secret = configuration[BookingOffers.NumberKeySetting];
+		if (!BookingOffers.IsInstalled(db))
+		{
+			return BookingOfferQuote.Unavailable;
+		}
+		if (!forCurrentBooking)
+		{
+			return BookingOffers.Quote(db, null, secret, customer, salon, null, null).Quote;
+		}
+		using SqlTransaction tx = db.BeginTransaction(IsolationLevel.ReadCommitted);
+		ReservationDraft? draft = ReadDraft(db, tx, customer);
+		if (draft is null || draft.Confirmed || draft.SalonMasterID is null)
+		{
+			return BookingOfferQuote.Unavailable;
+		}
+		if (bill == Guid.Empty)
+		{
+			bill = db.QueryFirstOrDefault<Guid>("SELECT TOP(1) UniqueBillID FROM dbo.HairCut_Item_Bill_Master_Primary\nWHERE CreatedBy=@customer AND SeatBookingDetailsID=@id ORDER BY CreatedDate DESC;", new
+			{
+				customer = customer,
+				id = draft.SeatBookingDetailsID
+			}, tx);
+		}
+		BookingOfferQuote quote = BookingOffers.Quote(db, tx, secret, customer, draft.SalonMasterID, draft.BookingDate,
+			BillAmount(db, tx, customer, bill)).Quote;
+		tx.Commit();
+		return quote;
+	}
+
 	public ReservationReply Checkout(Guid customer, Guid bill, AppoinmentModal.ReviewTimeSelectionRequest? request)
 	{
 		SqlConnection db = Open();
@@ -280,6 +326,22 @@ public sealed class CustomerReservationStore(IConfiguration configuration)
 				{
 					return Finish("Cart Empty");
 				}
+				// First-booking offer: only for an app that showed one. It is checked before anything is
+				// written, under the same exclusive lock as the confirmation, so two bookings cannot both
+				// take the last of the budget. If it no longer matches, nothing is confirmed.
+				decimal offerAmount = 0;
+				BookingOfferQuote? offer = null;
+				byte[]? offerKey = null;
+				if (request?.OfferDiscount is decimal shownDiscount)
+				{
+					offerAmount = BillAmount(db, tx, customer, bill);
+					(offer, offerKey) = BookingOffers.Quote(db, tx, configuration[BookingOffers.NumberKeySetting], customer,
+						reservationDraft.SalonMasterID, reservationDraft.BookingDate, offerAmount);
+					if (reservationDraft.SalonMasterID is null || !offer.IsAvailable || offer.Discount != shownDiscount)
+					{
+						return Finish("Offer Changed");
+					}
+				}
 				SqlConnection cnn = db;
 				var param = new
 				{
@@ -298,6 +360,20 @@ public sealed class CustomerReservationStore(IConfiguration configuration)
 				SqlTransaction transaction2 = tx;
 				commandType = CommandType.StoredProcedure;
 				cnn2.Execute("dbo.updateBookingStatus", param2, transaction2, null, commandType);
+				if (offer is not null)
+				{
+					// Saved with the confirmation: both are kept, or neither.
+					db.Execute("INSERT dbo.BookingOffer(SeatBookingDetailsID,CustomerID,CustomerKey,SalonMasterID,BookingDate,OriginalAmount,DiscountAmount)\nVALUES(@id,@customer,@key,@salon,@date,@amount,@discount);", new
+					{
+						id = reservationDraft.SeatBookingDetailsID,
+						customer = customer,
+						key = offerKey,
+						salon = reservationDraft.SalonMasterID,
+						date = reservationDraft.BookingDate,
+						amount = offerAmount,
+						discount = offer.Discount
+					}, tx);
+				}
 				// Preserve this project's cart cleanup, within the confirmation transaction.
 				db.Execute("dbo.deleteClientSideCartItemsByBill", new
 				{

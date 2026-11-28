@@ -1723,6 +1723,35 @@ namespace InfinityHairartsAPI.Services
             }
             return Tuple.Create(Message);
         }
+	/// <summary>The first-booking offer for the signed-in customer. A problem hides the offer; it never blocks booking.</summary>
+	public BookingOfferQuote? getFirstBookingOffer(Guid? salonMasterID, bool review)
+	{
+		Guid customer = CustomerID();
+		if (customer == Guid.Empty)
+		{
+			return null;
+		}
+		try
+		{
+			return ReservationStore().QuoteOffer(customer, getSessionvalueUniqueBillID(), salonMasterID, review);
+		}
+		catch (Exception ex)
+		{
+			new LogError().Error(ex);
+			return BookingOfferQuote.Unavailable;
+		}
+	}
+
+	public IReadOnlyList<CustomerBookingOffer>? getFirstBookingOfferBookings()
+	{
+		Guid customer = CustomerID();
+		if (customer == Guid.Empty)
+		{
+			return null;
+		}
+		return ReservationStore().BookingOffersFor(customer);
+	}
+
 	public Tuple<string> clientSideCheckoutCartItem(AppoinmentModal.ReviewTimeSelectionRequest? request = null)
 	{
 		Guid guid = CustomerID();

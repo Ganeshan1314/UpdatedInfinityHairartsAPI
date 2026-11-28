@@ -61,6 +61,7 @@ builder.Services.AddScoped<ISalonOwnerAuthenticationService>(services => service
 builder.Services.AddSalonOwnerPersistentSignIn(builder.Configuration, builder.Environment);
 SuperAdminAuthentication.Register(builder.Services);
 builder.Services.AddScoped<SalonOwnerDashboardService>();
+builder.Services.AddScoped<BookingOfferService>();
 builder.Services.AddScoped<SalonOwnerServicesReader>();
 builder.Services.AddScoped<SalonOwnerServicesWriter>();
 builder.Services.AddScoped<SalonOwnerAppointmentsReader>();

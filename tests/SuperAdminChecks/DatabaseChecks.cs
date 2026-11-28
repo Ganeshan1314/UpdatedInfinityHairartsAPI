@@ -128,7 +128,7 @@ internal static class DatabaseChecks
                 new { SalonID = id, Visible = visible, ExpectedVisible = expected, Actor = "fixture-application-owner" }, transaction, commandType: CommandType.StoredProcedure);
             await Set(true, false);
             Check(await connection.QuerySingleAsync<bool>("SELECT IsVisibleToCustomers FROM dbo.SalonMaster WHERE SalonMasterID = @id", new { id }, transaction), "Approval persists to SalonMaster");
-            var audit = await connection.QuerySingleAsync<SuperAdminAudit>("SELECT * FROM dbo.SuperAdminSalonAudit WHERE SalonMasterID = @id", new { id }, transaction);
+            var audit = await connection.QuerySingleAsync<SuperAdminAudit>("SELECT AuditID, SalonMasterID, SalonName, ActorUserName, IsVisibleToCustomers, CreatedUtc FROM dbo.SuperAdminSalonAudit WHERE SalonMasterID = @id", new { id }, transaction);
             Check(audit.ActorUserName == "fixture-application-owner" && audit.IsVisibleToCustomers, "Approval records the actor and visibility atomically");
             await Set(true, true);
             Check(await connection.QuerySingleAsync<int>("SELECT COUNT(*) FROM dbo.SuperAdminSalonAudit WHERE SalonMasterID = @id", new { id }, transaction) == 1, "Unchanged visibility does not duplicate audit entries");
@@ -138,6 +138,40 @@ internal static class DatabaseChecks
             await Set(false, true);
             var hidden = await connection.QueryAsync<dynamic>("dbo.getActiveSalonsByLocation", new { LocationMasterID = location }, transaction, commandType: CommandType.StoredProcedure);
             Check(!hidden.Any(row => (Guid)row.SalonMasterID == id), "Hidden salons disappear from the customer picker");
+        });
+        await InTransaction(async transaction => {
+            var id = await CreateSalon(transaction);
+            async Task<int> Count(string status, bool includeRejection = true)
+            {
+                using var data = await connection.QueryMultipleAsync("dbo.GetSuperAdminSalons",
+                    new { Search = "Super admin rollback fixture", Status = status, Page = 1, PageSize = 20, IncludeRejection = includeRejection },
+                    transaction, commandType: CommandType.StoredProcedure);
+                var total = await data.ReadSingleAsync<int>();
+                _ = (await data.ReadAsync()).ToList();
+                return total;
+            }
+            async Task Reject() => await connection.ExecuteAsync("dbo.RejectSuperAdminSalon",
+                new { SalonID = id, Actor = "fixture-application-owner" }, transaction, commandType: CommandType.StoredProcedure);
+            await Reject();
+            await Reject();
+            Check(await Count("pending") == 0 && await Count("rejected") == 1, "A rejected salon moves from the pending queue to the rejected filter");
+            Check(await connection.QuerySingleAsync<int>("SELECT COUNT(*) FROM dbo.SuperAdminSalonAudit WHERE SalonMasterID = @id AND IsRejection = 1 AND IsVisibleToCustomers = 0", new { id }, transaction) == 1,
+                "Rejection is audited once");
+            using (var data = await connection.QueryMultipleAsync("dbo.GetSuperAdminSalons", new { Search = "Super admin rollback fixture", Status = "all", Page = 1, PageSize = 20 }, transaction, commandType: CommandType.StoredProcedure)) {
+                _ = await data.ReadSingleAsync<int>();
+                Check((await data.ReadAsync<SuperAdminSalon>()).Single().SalonMasterID == id, "The earlier API result shape is unchanged without IncludeRejection");
+            }
+            await connection.ExecuteAsync("dbo.SetSuperAdminSalonVisibility",
+                new { SalonID = id, Visible = true, ExpectedVisible = false, Actor = "fixture-application-owner" }, transaction, commandType: CommandType.StoredProcedure);
+            Check(await connection.QuerySingleAsync<int>("SELECT COUNT(*) FROM dbo.SalonMaster WHERE SalonMasterID = @id AND RejectedUtc IS NULL AND IsVisibleToCustomers = 1", new { id }, transaction) == 1,
+                "Approving a rejected salon clears the rejection");
+            try {
+                await Reject();
+                throw new Exception("Expected rejection of a visible salon to fail");
+            }
+            catch (SqlException exception) when (exception.Number == 50046) {
+                Check(true, "The database refuses to reject a visible salon");
+            }
         });
         foreach (var scenario in new[] { "inactive", "stale", "missing" }) await InTransaction(async transaction => {
             var id = scenario == "missing" ? Guid.NewGuid() : await CreateSalon(transaction, scenario != "inactive");

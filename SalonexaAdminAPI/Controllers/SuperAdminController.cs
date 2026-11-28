@@ -54,7 +54,7 @@ public sealed class SuperAdminController(SuperAdminAuthentication authentication
     public async Task<IActionResult> Salons([FromQuery, StringLength(100)] string search = "", [FromQuery] string status = "all",
         [FromQuery, Range(1, 100000)] int page = 1, CancellationToken cancellationToken = default)
     {
-        if (status is not ("all" or "pending" or "visible" or "inactive")) return BadRequest(new { message = "Invalid salon status." });
+        if (status is not ("all" or "pending" or "visible" or "rejected" or "inactive")) return BadRequest(new { message = "Invalid salon status." });
         return Ok(await dashboard.GetSalons(search.Trim(), status, page, cancellationToken));
     }
 
@@ -76,6 +76,20 @@ public sealed class SuperAdminController(SuperAdminAuthentication authentication
         catch (SqlException exception) when (exception.Number == 50044)
         { return NotFound(new { message = "This salon no longer exists." }); }
         catch (SqlException exception) when (exception.Number is 50045 or 50046)
+        { return Conflict(new { message = exception.Message }); }
+    }
+
+    [HttpPost("salons/{salonId:guid}/reject")]
+    public async Task<IActionResult> Reject(Guid salonId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await dashboard.Reject(salonId, User.FindFirstValue(ClaimTypes.Name)!, cancellationToken);
+            return NoContent();
+        }
+        catch (SqlException exception) when (exception.Number == 50044)
+        { return NotFound(new { message = "This salon no longer exists." }); }
+        catch (SqlException exception) when (exception.Number == 50046)
         { return Conflict(new { message = exception.Message }); }
     }
 }
